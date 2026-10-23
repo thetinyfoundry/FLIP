@@ -8,6 +8,12 @@ C# · .NET 10 · WPF · Windows x64. No account, cloud backend, Electron or Pyth
 
 ![TXT conversion wheel](docs/assets/wheel.png)
 
+### Demo
+
+[▶ Watch or download the FLIP demo video](docs/assets/flip-demo.mp4)
+
+GitHub may show this as a downloadable video instead of an inline player. The file is stored in the repository and the link above is the stable project link.
+
 [Italian guide](README.it.md) · [Release review](PUBLIC_RELEASE_REVIEW.md) · [Validation](TEST_RESULTS.md)
 
 [Windows installation](docs/WINDOWS-INSTALL.md) · [Publication plan](docs/PUBLICATION-PLAN.md) · [Demo recording](docs/DEMO.md) · [Latest audit](docs/AUDIT-2026-10-23.md)
@@ -138,3 +144,4 @@ Remove integration before moving the application to another path.
 MIT covers Flip's own source, icon, interface and procedural sound. Third-party licenses and binary redistribution/source obligations are separate: read THIRD_PARTY_NOTICES.md.
 Inspired by the interaction of Tangerine, independently implemented with original branding/assets and no affiliation. Flip does not claim Tangerine's full format coverage.
 
+You may fork, modify and redistribute Flip under the MIT License. Keep the copyright and license notices, and credit **The Tiny Foundry** when you publish a modified version. Donations are optional: once a stable public release exists, a GitHub Sponsor or Ko-fi link can be added here without changing the license or making support mandatory.

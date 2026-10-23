@@ -1,147 +1,77 @@
-# Flip for Windows
+# FLIP for Windows
 
-**0.4.0-beta.3 — local beta candidate; not yet a public binary release.**
+Convert a file without leaving Explorer. Drag it, press **Down Arrow**, and drop it on a format in the wheel. FLIP saves a new copy beside the original.
 
-Drag a local file from Explorer or Desktop, tap **Down Arrow**, and drop it on an output format. Change the key from the tray's Settings panel. Flip converts locally and saves a new copy beside the original.
+**0.4.0-beta.3 · Windows x64 · source beta.** There is no public installer release yet. Build the source using the instructions below.
 
-C# · .NET 10 · WPF · Windows x64. No account, cloud backend, Electron or Python runtime.
+![FLIP conversion wheel](docs/assets/wheel.png)
 
-![TXT conversion wheel](docs/assets/wheel.png)
+[Download the demo (MP4)](docs/assets/flip-demo.mp4) · [Italiano](README.it.md) · [Installation guide](docs/WINDOWS-INSTALL.md)
 
-### Demo
+## Build and install
 
-[▶ Watch or download the FLIP demo video](docs/assets/flip-demo.mp4)
-
-GitHub may show this as a downloadable video instead of an inline player. The file is stored in the repository and the link above is the stable project link.
-
-[Italian guide](README.it.md) · [Release review](PUBLIC_RELEASE_REVIEW.md) · [Validation](TEST_RESULTS.md)
-
-[Windows installation](docs/WINDOWS-INSTALL.md) · [Publication plan](docs/PUBLICATION-PLAN.md) · [Demo recording](docs/DEMO.md) · [Latest audit](docs/AUDIT-2026-10-23.md)
-
-[Custom shortcuts and current validation](docs/CUSTOM-SHORTCUTS.md)
-
-[Watch the supplied demo recording](docs/assets/flip-demo.mp4)
-
-## Start
-
-For normal users, download the latest `Flip-*-win-x64.zip` from **Releases**, extract it, and run `Install-Release.ps1`. This installs the prebuilt app without requiring the .NET SDK.
-
-For a local build, open app\Flip.exe. Flip lives in the notification area; it does not keep a taskbar window open.
-Right-click the tray icon → **Impostazioni…** to choose an arrow, Space, `<>`, or record another supported single key. The original wheel tick has its own sound toggle. Ctrl/Alt/Shift/Fn and system keys cannot be used as standalone drag triggers.
+Install the [.NET 10 SDK for Windows x64](https://dotnet.microsoft.com/download/dotnet/10.0), download or clone this repository, and extract it. Open PowerShell in the project folder:
 
 ~~~powershell
-.\app\Flip.exe --install-shortcuts
-.\app\Flip.exe --enable-startup
+.\scripts\Build.ps1
+.\scripts\Install.ps1
 ~~~
 
-The installer creates Desktop/Start shortcuts and enables quiet startup at sign-in by default, per user and without an administrator service. Use `-NoShortcuts` / `-NoStartup` to opt out. Running only the built executable does not install these integrations. Windows may independently disable startup apps; the tray's startup toggle remains available.
+The installer copies FLIP to `%LOCALAPPDATA%\Programs\Flip`, creates Desktop and Start Menu shortcuts, and enables startup when you sign in to Windows. These defaults apply per user. Use `-NoShortcuts` or `-NoStartup` to opt out. You can also change startup from the tray menu. Windows can independently disable startup apps.
 
-## Convert
+FLIP stays in the notification area near the clock. Right-click its icon to open Settings, choose a shortcut, change the language or test the wheel sound. Italian Windows uses Italian by default; other system languages use English. You can override this in Settings.
 
-1. Select the file normally in Explorer.
-2. Either start dragging and press your chosen key, or hold the key first and then start dragging. Once the wheel appears, release the key. Down Arrow is the default; do not add Ctrl, Alt or Shift.
-3. Drop on an enabled sector. Escape cancels the wheel.
+The build needs Internet access to restore packages. Conversion runs locally without an account or cloud service. FLIP uses C#, .NET 10 and WPF.
 
-Avoid holding Ctrl/Shift during the gesture: Windows still interprets them as drag modifiers. Outside the wheel, normal Windows drag/drop continues; press Escape before releasing the mouse to cancel. If extra files are selected, Flip receives the whole group. A batch offers only formats shared by every member and reports unsupported members rather than silently skipping them.
+## Use the wheel
 
-During the Explorer/Desktop gesture, Flip consumes only the chosen key's press/release so Explorer does not also act on it. Normal keyboard use outside this context is passed through. Existing saved supported single-key choices are preserved. The picker remains available without a gesture; third-party file-manager drag integration is not promised.
+1. Select a file in Explorer or on the Desktop.
+2. Start dragging and press Down Arrow, or hold the key first and then start dragging. Release the key when the wheel appears.
+3. Drop on an available output format. Press Escape to cancel.
 
-The wheel now shows **every available output**, instead of eight fixed choices. TXT has twelve destinations when the document engine is installed: PDF, DOCX, EPUB, Markdown, HTML, ODT, RTF, PNG, JPG, WebP, FB2 and RST.
-The charcoal backing is mildly translucent, with space around the sectors. A short original “tic” plays on sector changes. It can be muted or tested from the tray menu.
+Choose another supported single key in Settings. Avoid Ctrl, Alt and Shift during dragging: Windows uses them to change its own copy/move behavior. Outside the wheel, normal Windows drag and drop still applies. Press Escape before releasing the mouse to cancel the entire drag.
 
-Output names use .converted plus collision numbering. Existing files and originals are not overwritten. Document-to-image conversion creates one output per rendered page.
+FLIP reserves the selected key during Explorer/Desktop mouse gestures. Outside that context it passes keyboard input through. Integration with other file managers has not been validated.
 
-## Formats and dependencies
+Output names include `.converted` and a number when needed. FLIP does not overwrite the original or an existing output. Batches offer formats supported by every selected file. Document-to-image conversion creates a separate image for each rendered page.
+
+## Supported conversions
 
 | Input | Outputs |
-|---|---|
-| PNG, JPG/JPEG, WebP, BMP, TIFF, GIF | PNG, JPG, WebP, PDF, BMP, TIFF, GIF, except the source format |
-| TXT | PDF/PNG/JPG/WebP with the core alone; also DOCX, EPUB, Markdown, HTML, ODT, RTF, FB2, RST with Pandoc |
-| Markdown, HTML, DOCX, EPUB, ODT, RTF, FB2, RST | Other text/document formats with Pandoc; PDF/images also need LibreOffice |
-| PDF | PNG/JPG/WebP per page and extracted TXT with the core; other document formats with Pandoc |
+| --- | --- |
+| PNG, JPG/JPEG, WebP, BMP, TIFF, GIF | PNG, JPG, WebP, PDF, BMP, TIFF, GIF, except the input format |
+| TXT | PDF, PNG, JPG, WebP with the core; DOCX, EPUB, Markdown, HTML, ODT, RTF, FB2, RST with Pandoc |
+| Markdown, HTML, DOCX, EPUB, ODT, RTF, FB2, RST | Other document formats with Pandoc; rendering to PDF/images also needs LibreOffice |
+| PDF | PNG/JPG/WebP per page and extracted TXT; other document formats with Pandoc |
 
-Pandoc is an optional external executable downloaded separately by the build helper. LibreOffice is a separate user installation.
-Use a currently maintained .NET Desktop Runtime 10 and LibreOffice. The development installation was updated with explicit consent to LibreOffice 26.8.1; see the validation limits below.
-
-**Not implemented:** Pages output/input, audio/video conversion or OCR. PDF-to-document extracts text and does not reconstruct layout. HTML conversion is document conversion, not a browser screenshot; JavaScript is not rendered. GIF input uses the first frame.
-
-## Build on Windows
-
-Requires a .NET 10 SDK. global.json accepts newer .NET 10 feature bands, rather than requiring an old exact SDK.
-Exit Flip before publishing over app/.
+To add the optional Pandoc engine:
 
 ~~~powershell
-# Image/PDF/text core:
-.\scripts\Build.ps1
-
-# Also obtain the pinned official Pandoc engine:
 .\scripts\Build.ps1 -DocumentEngine
-
-# Per-user installation, with Desktop/Start shortcuts and startup:
-.\scripts\Install.ps1
-
-# Open the optional multi-output panel:
-.\app\Flip.exe --ui
 ~~~
 
-The first restore/download needs network access. Conversion does not require a cloud service.
-The Pandoc archive is SHA256 checked before extraction. An already downloaded official archive can be passed with -DocumentEngine -PandocArchive.
-The script does not install LibreOffice, enable startup, or change PowerShell execution policy.
+The build helper downloads the pinned official Pandoc archive and checks its SHA256. LibreOffice is a separate optional installation; FLIP does not install it for you. See [third-party notices](THIRD_PARTY_NOTICES.md).
 
-If your execution policy blocks scripts, use the manual build commands under the existing policy:
-~~~powershell
-dotnet restore .\src\Flip\Flip.csproj --configfile .\NuGet.Config --locked-mode -r win-x64
-dotnet publish .\src\Flip\Flip.csproj -c Release -r win-x64 --self-contained false --no-restore -o .\app
-~~~
-For document conversion, app\tools\pandoc.exe and its licenses must also be installed from the pinned official release. The published app requires .NET Desktop Runtime 10 x64.
+PDF-to-document conversion extracts text; it does not reconstruct the original layout. GIF input uses the first frame. HTML conversion does not execute JavaScript. Pages, audio/video conversion and OCR are not implemented.
 
-## Validate
+## Beta status
 
-~~~powershell
-dotnet .\app\Flip.dll --test-input --evidence .\_local\evidence\input
-# Full suite: Pandoc and LibreOffice required; creates synthetic documents only.
-dotnet .\app\Flip.dll --test-conversions --evidence .\_local\evidence\conversions
-dotnet .\app\Flip.dll --export-sound --evidence .\_local\evidence\sound
-~~~
+Local build and automated checks cover parts of the application. They do not replace real drag/drop, sound, display-scaling and document-fidelity checks on a clean Windows machine. Read [test results](TEST_RESULTS.md) and the [release review](PUBLIC_RELEASE_REVIEW.md) for evidence and remaining work. The Windows workflow checks build and input behavior; it does not publish binaries.
 
-The prepared GitHub workflow covers Windows build and input/policy/audio checks. It has not run remotely. Native drag/drop, display scaling and real document fidelity require additional testing; see TEST_RESULTS.md.
+A future prebuilt package will appear under GitHub Releases after those checks and redistribution notices are complete. The current framework-dependent build requires the **.NET 10 Windows Desktop Runtime x64**; the SDK above includes what developers need.
 
-## Publication and privacy
+## Privacy and removal
 
-This source candidate has a MIT license, build workflow, original artwork/sound and a reviewed ignore list.
-Source export uses Git's committed file list, not a ZIP of the entire working folder.
+The repository excludes local builds, downloaded tools, backups and runtime logs. The audit script checks source and history for common credential and personal-path patterns; it cannot guarantee that every secret or identifying detail is absent.
 
-~~~powershell
-.\scripts\Audit-Repository.ps1
-# After reviewing and committing the intended source:
-.\scripts\Export-Source.ps1
-~~~
+Runtime logs under `%LOCALAPPDATA%\Flip\logs` may contain document paths. Review and redact logs before sharing them. See [security guidance](SECURITY.md).
 
-The audit checks tracked paths, current source and Git history for common personal-path/key patterns. It is not a complete secret scanner or an anonymity guarantee.
-Review commit authors/emails, binary assets, filenames, licenses and screenshots. GitHub publication exposes the account and commit metadata; deleting something in a later commit does not erase it from earlier history.
-
-Local evidence, backups and prototypes live in _local/. App output, packages and downloaded tools are ignored.
-Runtime diagnostics live in %LOCALAPPDATA%\Flip\logs, rotate at about 2 MiB, and may include document paths. Never upload those logs without redaction.
-
-**Public binary release is blocked pending post-restart validation, final native acceptance and redistribution checks.** LibreOffice was updated from 24.2.5.2 to 26.8.1 using a checksum-verified, digitally signed official installer. The new engine passed 99 conversion checks after a temporary-profile path fix; the installer requested a Windows restart, which was not performed automatically. See TEST_RESULTS.md, [LibreOffice advisories](https://www.libreoffice.org/security/) and PUBLIC_RELEASE_REVIEW.md.
-No signed installer or redistribution-ready binary bundle is supplied by this source export.
-
-## Remove user integration
-
-~~~powershell
-.\app\Flip.exe --disable-startup
-.\app\Flip.exe --remove-shortcuts
-# If you opted into the classic Explorer context menu:
-.\app\Flip.exe --remove-context-menu
-.\app\Flip.exe --stop
-~~~
-
-Then remove the application folder. Per-user settings/logs are under %LOCALAPPDATA%\Flip. Converted files belong to you and are not removed.
-Remove integration before moving the application to another path.
+Before deleting an installation, run its executable with `--disable-startup` and `--remove-shortcuts`. If you enabled the optional classic Explorer menu, also run `--remove-context-menu`. Exit FLIP, then remove the installation folder. Converted documents stay where you saved them.
 
 ## License and inspiration
 
-MIT covers Flip's own source, icon, interface and procedural sound. Third-party licenses and binary redistribution/source obligations are separate: read THIRD_PARTY_NOTICES.md.
-Inspired by the interaction of Tangerine, independently implemented with original branding/assets and no affiliation. Flip does not claim Tangerine's full format coverage.
+FLIP's own code and original assets use the [MIT License](LICENSE). You may fork, modify and redistribute them, including commercially, while retaining the copyright and license notices. A visible credit to **The Tiny Foundry** is appreciated. Third-party components have their own licenses.
 
-You may fork, modify and redistribute Flip under the MIT License. Keep the copyright and license notices, and credit **The Tiny Foundry** when you publish a modified version.
+The interaction is inspired by Tangerine. FLIP is an independent implementation with original branding and assets, without affiliation or a claim to the same feature coverage.
+
+[Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [Architecture](ARCHITECTURE.md)

@@ -2,7 +2,9 @@
 
 FLIP is a Windows x64 beta. Windows 11 is the initial acceptance target; a clean-machine test is still required. No administrator service is needed. ARM64 and 32-bit packages are not provided.
 
-## Prebuilt release (recommended)
+## Prebuilt release (planned)
+
+No public binary release is available yet. Use the source instructions below. The following packaging instructions describe the planned release.
 
 Download the `Flip-*-win-x64.zip` asset from GitHub Releases, extract it, and run `Install-Release.ps1`. The script installs the bundled app into `%LOCALAPPDATA%\Programs\Flip`, verifies copied files, creates Desktop/Start Menu shortcuts and enables per-user startup. It does not require the .NET SDK or administrator rights; the .NET 10 Windows Desktop Runtime x64 is required.
 

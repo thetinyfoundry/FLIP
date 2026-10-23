@@ -144,4 +144,4 @@ Remove integration before moving the application to another path.
 MIT covers Flip's own source, icon, interface and procedural sound. Third-party licenses and binary redistribution/source obligations are separate: read THIRD_PARTY_NOTICES.md.
 Inspired by the interaction of Tangerine, independently implemented with original branding/assets and no affiliation. Flip does not claim Tangerine's full format coverage.
 
-You may fork, modify and redistribute Flip under the MIT License. Keep the copyright and license notices, and credit **The Tiny Foundry** when you publish a modified version. Donations are optional: once a stable public release exists, a GitHub Sponsor or Ko-fi link can be added here without changing the license or making support mandatory.
+You may fork, modify and redistribute Flip under the MIT License. Keep the copyright and license notices, and credit **The Tiny Foundry** when you publish a modified version.

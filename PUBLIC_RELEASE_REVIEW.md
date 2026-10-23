@@ -1,5 +1,7 @@
 # Pre-publication review — 22 October 2026
 
+Historical review. For the current publication and package contents, see [publication status](docs/PUBLICATION-STATUS.md). The binary-notice gaps recorded below were addressed by the packaging script and its included licenses; remaining hardware and listening limits are not promoted to passing tests.
+
 Current candidate: **0.4.0-beta.3**. Read [current shortcuts and validation](docs/CUSTOM-SHORTCUTS.md), [the initial 23 October audit](docs/AUDIT-2026-10-23.md), [Windows installation](docs/WINDOWS-INSTALL.md) and [controlled publication plan](docs/PUBLICATION-PLAN.md) first. Ctrl activation and SoundPlayer described in this historical beta.1 review have been replaced. Native drag/audio and clean-machine release gates remain open; no publication occurred.
 
 Candidate: **Flip 0.4.0-beta.1**. This review covers the source project, local Windows application, build inputs and publication contents. No GitHub repository, push or public release was created.

@@ -1,5 +1,11 @@
 # Flip — guida italiana
 
+## Scarica e installa
+
+Scarica lo ZIP Windows x64 da [Releases](https://github.com/thetinyfoundry/FLIP/releases), estrai l'intero archivio e avvia `Install-FLIP.cmd`. Serve il runtime .NET 10 Windows Desktop x64; non serve compilare il codice. La guida `README.txt` nel pacchetto spiega prerequisiti e motori documentali facoltativi. La versione attuale conserva il numero 0.4.0-beta.3.
+
+[Stato della pubblicazione e verifiche](docs/PUBLICATION-STATUS.md).
+
 Flip è una beta per Windows: apri la ruota con Freccia giù (o il tasto che scegli nelle impostazioni) e rilasci il file su un formato. La copia viene salvata accanto all'originale, senza sovrascriverlo.
 
 ## Sul PC di sviluppo

@@ -2,13 +2,19 @@
 
 Convert a file without leaving Explorer. Drag it, press **Down Arrow**, and drop it on a format in the wheel. FLIP saves a new copy beside the original.
 
-**0.4.0-beta.3 · Windows x64 · source beta.** There is no public installer release yet. Build the source using the instructions below.
+FLIP is a local file converter for Windows x64. The current version is **0.4.0-beta.3**.
 
 ![FLIP conversion wheel](docs/assets/wheel.png)
 
 [Download the demo (MP4)](docs/assets/flip-demo.mp4) · [Italiano](README.it.md) · [Installation guide](docs/WINDOWS-INSTALL.md)
 
-## Build and install
+## Download and install
+
+Open [Releases](https://github.com/thetinyfoundry/FLIP/releases), download the Windows x64 ZIP and extract the whole archive. Install the [.NET 10 Windows Desktop Runtime x64](https://dotnet.microsoft.com/download/dotnet/10.0), then double-click `Install-FLIP.cmd`. You do not need the SDK or a compiler to use the packaged app. The package includes `README.txt`, installation scripts, license notices and checksums.
+
+Optional document conversions use Pandoc: close FLIP and run `Install-DocumentEngine.ps1` from the extracted package. It downloads the official engine directly from its publisher and verifies its checksum. LibreOffice is a separate optional installation for document rendering.
+
+## Build from source
 
 Install the [.NET 10 SDK for Windows x64](https://dotnet.microsoft.com/download/dotnet/10.0), download or clone this repository, and extract it. Open PowerShell in the project folder:
 
@@ -54,11 +60,11 @@ The build helper downloads the pinned official Pandoc archive and checks its SHA
 
 PDF-to-document conversion extracts text; it does not reconstruct the original layout. GIF input uses the first frame. HTML conversion does not execute JavaScript. Pages, audio/video conversion and OCR are not implemented.
 
-## Beta status
+## Validation
 
 Local build and automated checks cover parts of the application. They do not replace real drag/drop, sound, display-scaling and document-fidelity checks on a clean Windows machine. Read [test results](TEST_RESULTS.md) and the [release review](PUBLIC_RELEASE_REVIEW.md) for evidence and remaining work. The Windows workflow checks build and input behavior; it does not publish binaries.
 
-A future prebuilt package will appear under GitHub Releases after those checks and redistribution notices are complete. The current framework-dependent build requires the **.NET 10 Windows Desktop Runtime x64**; the SDK above includes what developers need.
+The packaged app requires the **.NET 10 Windows Desktop Runtime x64**. It is unsigned. Automated build/input checks run on GitHub's Windows runner; they do not certify every keyboard, display or output device. The version currently retains its prerelease suffix.
 
 ## Privacy and removal
 

@@ -1,5 +1,7 @@
 # Controlled GitHub publication
 
+Historical preparation plan. The repository is now public. See [current publication status](PUBLICATION-STATUS.md) and the current README for download instructions. The chronology below records the checks originally planned.
+
 Status: local preparation, 23 October 2026. No repository remote is configured and no upload has been performed in this audit.
 
 1. Review the diff and run `scripts/Audit-Repository.ps1`. It checks tracked text, new unignored files, historical paths, historical text and commit metadata using explicit patterns. Review images/audio and commit identities separately. A regex scan cannot certify absence of all secrets or personal data. Ignored local files must never be uploaded by zipping the workspace.

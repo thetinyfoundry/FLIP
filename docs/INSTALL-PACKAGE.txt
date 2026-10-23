@@ -1,0 +1,32 @@
+FLIP for Windows x64
+
+1. Install Microsoft .NET 10 Windows Desktop Runtime x64:
+   https://dotnet.microsoft.com/download/dotnet/10.0
+2. Extract the whole ZIP to a folder. Exit FLIP if it is running.
+3. Double-click Install-FLIP.cmd. Do not run it inside the ZIP viewer.
+4. Start FLIP from its Desktop or Start Menu shortcut.
+
+FLIP installs for your user in %LOCALAPPDATA%\Programs\Flip.
+The installer creates shortcuts and enables startup with Windows by default.
+Change startup from the tray menu. To opt out during installation, run
+Install.ps1 -Source .\payload -NoStartup -NoShortcuts from PowerShell.
+
+The launcher uses a process-only PowerShell policy override for these local
+installation scripts. It does not change the computer's stored execution policy.
+This build is unsigned. Windows may ask you to confirm downloaded software.
+
+Optional document engine:
+Run Install-DocumentEngine.ps1 after installing FLIP, with FLIP closed.
+It downloads official Pandoc 3.12.1 directly from its publisher, verifies its
+SHA256 and preserves its license notices. Pandoc is not inside this ZIP.
+LibreOffice is a separate optional installation for document-to-PDF rendering:
+https://www.libreoffice.org/download/download-libreoffice/
+
+Core image conversions, TXT rendering and PDF extraction do not need Pandoc.
+See the repository's format table for what needs each optional component.
+
+Source, documentation and issue reports:
+https://github.com/thetinyfoundry/FLIP
+
+No document is uploaded by FLIP's conversion engine. Runtime logs can contain
+document paths; review logs before sharing them.

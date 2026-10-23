@@ -10,6 +10,8 @@ C# · .NET 10 · WPF · Windows x64. No account, cloud backend, Electron or Pyth
 
 ### Demo
 
+![FLIP demo](docs/assets/flip-demo.gif)
+
 [▶ Watch or download the FLIP demo video](docs/assets/flip-demo.mp4)
 
 GitHub may show this as a downloadable video instead of an inline player. The file is stored in the repository and the link above is the stable project link.

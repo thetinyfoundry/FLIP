@@ -41,9 +41,9 @@ The chosen key is consumed during Explorer/Desktop mouse gestures so Explorer do
 
 Startup is enabled by default by the installer and can be disabled through **Avvia con Windows** in the tray menu or excluded with `-NoStartup`. Running only a built executable does not install startup/shortcuts. No registry file associations are changed. The classic context menu remains separately opt-in.
 
-## Future executable release
+## Package requirements and validation
 
-End users should download a versioned Windows x64 package from GitHub Releases, not build the repository. The first binary release remains gated on native drag/drop and audio acceptance, clean-Windows testing, signing/trust decisions and complete third-party notices. The current build is framework-dependent and needs **.NET Desktop Runtime 10 x64**, not only the base .NET runtime.
+End users can download the versioned Windows x64 package from GitHub Releases. It includes component notices and checksums. The current build is framework-dependent and needs **.NET Desktop Runtime 10 x64**, not only the base .NET runtime. It is unsigned. Broader native drag/drop, listening, mixed-DPI and clean-Windows coverage remain testing limits, described in the release notes and [publication status](PUBLICATION-STATUS.md).
 
 A self-contained build could remove that runtime prerequisite at the cost of a larger download and runtime servicing responsibility. Start with a portable ZIP plus this per-user installer; defer MSI/MSIX until the installation contract is accepted. Publish checksums alongside the package. A checksum proves integrity against a trusted published value; it is not code signing.
 

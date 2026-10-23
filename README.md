@@ -10,6 +10,8 @@ FLIP is a local file converter for Windows x64. The current version is **0.4.0-b
 
 ## Download and install
 
+**[Download FLIP for Windows x64](https://github.com/thetinyfoundry/FLIP/releases/download/v0.4.0-beta.3/Flip-0.4.0-beta.3-win-x64.zip)** · [Release notes and checksum](https://github.com/thetinyfoundry/FLIP/releases/tag/v0.4.0-beta.3)
+
 Open [Releases](https://github.com/thetinyfoundry/FLIP/releases), download the Windows x64 ZIP and extract the whole archive. Install the [.NET 10 Windows Desktop Runtime x64](https://dotnet.microsoft.com/download/dotnet/10.0), then double-click `Install-FLIP.cmd`. You do not need the SDK or a compiler to use the packaged app. The package includes `README.txt`, installation scripts, license notices and checksums.
 
 Optional document conversions use Pandoc: close FLIP and run `Install-DocumentEngine.ps1` from the extracted package. It downloads the official engine directly from its publisher and verifies its checksum. LibreOffice is a separate optional installation for document rendering.

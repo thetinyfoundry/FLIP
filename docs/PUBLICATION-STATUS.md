@@ -10,4 +10,6 @@ Pandoc is optional. `Install-DocumentEngine.ps1` obtains the exact official vers
 
 The current version remains 0.4.0-beta.3. Packaging it does not imply code signing or universal hardware certification. The included installer's Desktop/Start shortcuts and startup defaults apply per user; Windows can independently disable startup apps.
 
+The [Windows package](https://github.com/thetinyfoundry/FLIP/releases/tag/v0.4.0-beta.3) is published. An independent download of the public ZIP matched SHA256 `a8ef0d868147c2f894402f32089aa95708681135cbad5d1f0d6f9f18fefaa559`. The archive contains 11,305,696 bytes. Its component notices and all entries in its checksum manifest were checked locally.
+
 Earlier audits and release reviews describe the state at their dates. Statements that nothing was published are historical. This document and the current README supersede those publication-status statements; their unresolved test limitations remain relevant.

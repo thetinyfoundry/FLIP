@@ -1,41 +1,72 @@
-# Flip — guida italiana
+# Flip — Guida in Italiano
+
+Converti qualsiasi file direttamente da Esplora file. Trascinalo, premi **Freccia giù**, e rilascialo sul formato desiderato nella ruota. Flip salverà una nuova copia convertita accanto all'originale, senza mai sovrascriverla.
+
+Flip è un convertitore locale per Windows x64. La versione attuale è la **0.5.0-beta.1**.
+
+---
+
+## 🌟 Novità della versione 0.5.0-beta.1
+
+- 🎬 **Conversioni Audio & Video (con FFmpeg)**:
+  - Formati audio: `MP3`, `WAV`, `FLAC`, `OGG`, `M4A`, `AAC`.
+  - Formati video: `MP4`, `MKV`, `WEBM`, `AVI`, `MOV`.
+  - **Estrazione rapida della traccia audio**: trascina un file video (es. MP4) sulla ruota e rilascialo su `MP3` o `WAV` per estrarre istantaneamente l'audio.
+- 📊 **Dati strutturati nativi (senza dipendenze esterne)**:
+  - Conversione bidirezionale tra `JSON`, `YAML`, `XML`, `CSV`.
+  - Esportazione diretta in `PDF`, `HTML`, `Markdown` e `TXT`.
+- ⏱️ **Barra di caricamento radiale animata**:
+  - La ruota rimane aperta durante le conversioni più lunghe (es. video o documenti pesanti), visualizzando un arco di avanzamento circolare, un raggio rotante e la percentuale in tempo reale, con una spunta verde finale al completamento.
+  - È possibile annullare la conversione in qualsiasi momento premendo **Esc**.
+- 🔔 **Verifica aggiornamenti integrata**:
+  - Tasto destro sull'icona di Flip nell'area di notifica $\rightarrow$ *"Verifica aggiornamenti su GitHub…"* per controllare istantaneamente la presenza di nuove release.
+- 🔊 **Feedback sonoro tattile migliorato**:
+  - Ripristinato il ticchettio secco originale della ruota con riproduzione nativa WASAPI/Media Foundation, compatibile con tutti gli output audio (cuffie Bluetooth, USB, monitor HDMI).
+
+---
 
 ## Scarica e installa
 
-Scarica lo ZIP Windows x64 da [Releases](https://github.com/thetinyfoundry/FLIP/releases), estrai l'intero archivio e avvia `Install-FLIP.cmd`. Serve il runtime .NET 10 Windows Desktop x64; non serve compilare il codice. La guida `README.txt` nel pacchetto spiega prerequisiti e motori documentali facoltativi. La versione attuale conserva il numero 0.4.0-beta.3.
+**[Scarica FLIP 0.5.0-beta.1 per Windows x64 (ZIP)](https://github.com/thetinyfoundry/FLIP/releases/download/v0.5.0-beta.1/Flip-0.5.0-beta.1-win-x64.zip)** · [Note di rilascio e checksum SHA256](https://github.com/thetinyfoundry/FLIP/releases/tag/v0.5.0-beta.1)
 
-[Stato della pubblicazione e verifiche](docs/PUBLICATION-STATUS.md).
+1. Scarica l'archivio ZIP da [GitHub Releases](https://github.com/thetinyfoundry/FLIP/releases) ed estrailo in una cartella.
+2. Installa il [.NET 10 Windows Desktop Runtime x64](https://dotnet.microsoft.com/download/dotnet/10.0) se non è già presente sul sistema.
+3. Fai doppio clic su `Install-FLIP.cmd` (oppure esegui `.\scripts\Install.ps1`). L'app viene installata in `%LOCALAPPDATA%\Programs\Flip` e si avvia automaticamente.
 
-Flip è una beta per Windows: apri la ruota con Freccia giù (o il tasto che scegli nelle impostazioni) e rilasci il file su un formato. La copia viene salvata accanto all'originale, senza sovrascriverlo.
+### Motori aggiuntivi facoltativi:
+- **Audio & Video (FFmpeg)**: Flip rileva automaticamente FFmpeg se installato nel sistema (ad esempio tramite `winget install Gyan.FFmpeg`) o inserito in `%LOCALAPPDATA%\Flip\tools\ffmpeg.exe`.
+- **Documenti avanzati (Pandoc & LibreOffice)**: chiudi Flip ed esegui `Install-DocumentEngine.ps1` per scaricare automaticamente l'eseguibile ufficiale di Pandoc verificandone l'hash SHA256. LibreOffice può essere installato a parte per il rendering di PDF e formati Office.
 
-## Sul PC di sviluppo
-Avvia Flip dall'icona sul Desktop o cercandolo in Start. Rimane nell'area di notifica.
-Tasto destro sull'icona vicino all'orologio → **Impostazioni…**: scegli una freccia, Spazio, `<>`, oppure registra un altro tasto singolo. Dal menu puoi anche disattivare l'avvio con Windows, silenziare il tic o provarlo. Il tic della ruota resta attivo per default; i suoni di Windows non vengono modificati.
-Sono supportati entrambi gli ordini: trascina e poi premi il tasto, oppure tieni premuto il tasto e inizia a trascinare. Quando appare la ruota puoi rilasciare il tasto. Durante il gesto da Explorer/Desktop il comando non viene passato anche a Explorer. Fuori dal gesto il tasto conserva la funzione normale. Evita Ctrl e Shift: restano modificatori di Windows. Fuori dalla ruota torna il drag/drop normale; premi Esc prima di rilasciare il mouse per annullare.
+---
 
-Per installare da sorgente: `.\scripts\Build.ps1`, poi `.\scripts\Install.ps1`. L'installer crea collegamenti Desktop/Start e abilita l'avvio con Windows per default; `-NoShortcuts` e `-NoStartup` permettono di escluderli. Servono .NET 10 SDK x64 per compilare e Desktop Runtime 10 x64 per eseguire un pacchetto senza SDK. Installazione per utente, senza servizio amministratore. [Guida completa](docs/WINDOWS-INSTALL.md).
+## Come usare la ruota
 
-La ruota mostra tutte le uscite disponibili e, durante la conversione, visualizza un anello di caricamento animato con raggio e percentuale in tempo reale.
-- **Immagini**: PNG, JPG, WEBP, PDF, BMP, TIFF, GIF.
-- **Dati strutturati (nativo)**: JSON, YAML, XML e CSV convertibili tra loro e verso TXT, HTML, MD e PDF.
-- **Audio e Video (con FFmpeg locale)**: Audio (MP3, WAV, FLAC, OGG, M4A, AAC) e Video (MP4, MKV, WEBM, AVI, MOV, oltre all'estrazione rapida dell'audio in MP3 o WAV).
-- **Documenti**: Con Pandoc, un TXT offre PDF, DOCX, EPUB, MD, HTML, ODT, RTF, PNG, JPG, WEBP, FB2 e RST.
-Pages e OCR non sono inclusi. Dal menu dell'icona nella barra di sistema è anche possibile verificare la presenza di nuove versioni su GitHub.
+1. Seleziona uno o più file in Esplora file o sul Desktop.
+2. Inizia a trascinare e premi **Freccia giù** (o il tasto configurato nelle Impostazioni). Quando la ruota compare puoi rilasciare il tasto.
+3. Porta il cursore sul settore del formato desiderato e rilascia il pulsante del mouse.
+4. Per annullare prima del rilascio, rilascia il file fuori dalla ruota oppure premi **Esc**.
 
-## Cosa significa pubblicare la beta
-La repo pubblica serve a condividere il codice, ricevere segnalazioni e permettere ad altri di compilarlo. Un archivio dei sorgenti non è un installer.
-L'app è offline, ma la prima compilazione e il download facoltativo del motore documenti richiedono Internet.
+Tasto destro sull'icona vicino all'orologio $\rightarrow$ **Impostazioni…**: puoi personalizzare il tasto di attivazione (frecce, barra spaziatrice o qualsiasi tasto singolo della tastiera).
 
-Prima della pubblicazione:
-1. Leggere PUBLIC_RELEASE_REVIEW.md e chiudere i blocchi della release.
-2. Verificare file tracciati e storico Git, inclusi autore/email, immagini e audio.
-3. Pubblicare soltanto l'esportazione dei file Git approvati. Non comprimere tutta la cartella di lavoro.
-4. Per distribuire anche gli eseguibili, preparare licenze/obblighi dei componenti e collaudo su una macchina pulita.
+---
 
-I prototipi precedenti, i backup e le prove sono in _local e non vengono esportati. App, cache NuGet e strumenti scaricati restano esclusi.
-I log runtime sono in %LOCALAPPDATA%\Flip\logs e possono contenere percorsi dei documenti: non vanno pubblicati senza ripulirli.
-GitHub lascia visibili account, commit e metadati: nessuno può promettere “nessuna traccia” in assoluto.
+## Tabella formati supportati
 
-LibreOffice è stato aggiornato, con autorizzazione esplicita, dalla versione 24.2.5.2 alla 26.8.1. Checksum e firma dell'installer ufficiale sono stati verificati. I test hanno trovato e corretto un problema con i percorsi lunghi dei profili temporanei: 99 controlli di conversione ora passano. Windows richiede ancora un riavvio; non è stato eseguito automaticamente. Prima degli eseguibili pubblici restano il collaudo dopo il riavvio, le prove native e la preparazione delle licenze del pacchetto.
+| Categoria | Formati in ingresso | Formati in uscita | Motore |
+| --- | --- | --- | --- |
+| **Immagini** | PNG, JPG/JPEG, WebP, BMP, TIFF, GIF | PNG, JPG, WebP, PDF, BMP, TIFF, GIF | Nativo (SkiaSharp) |
+| **Dati strutturati** | JSON, YAML/YML, XML, CSV | JSON, YAML, XML, CSV, TXT, HTML, Markdown, PDF | Nativo incorporato |
+| **Audio** | MP3, WAV, FLAC, OGG, M4A, AAC, WMA, OPUS | WAV, MP3, FLAC, OGG, M4A, AAC | FFmpeg locale |
+| **Video** | MP4, MKV, WebM, AVI, MOV, WMV, M4V | MP4, MKV, WebM, AVI, MOV, oltre ad estrazione audio MP3/WAV | FFmpeg locale |
+| **Testo semplice** | TXT | PDF, PNG, JPG, WebP; con Pandoc anche DOCX, EPUB, Markdown, HTML, ODT, RTF, FB2, RST | Nativo / Pandoc |
+| **Documenti** | Markdown, HTML, DOCX, EPUB, ODT, RTF, FB2, RST | Altri formati documento con Pandoc; PDF/immagini richiedono LibreOffice | Pandoc / LibreOffice |
+| **PDF** | PDF | Pagine singole in PNG/JPG/WebP e testo estratto in TXT; formati documento con Pandoc | Nativo / Pandoc |
 
-Per build, test, integrazione Windows e rimozione, usare le istruzioni complete in README.md.
+---
+
+## Privacy e sicurezza locale
+
+Tutte le conversioni avvengono **al 100% in locale** sul tuo computer: nessun dato, testo o file viene inviato su server esterni o servizi cloud.
+Flip non sovrascrive mai i file esistenti (aggiunge `.converted` e un progressivo numerico se necessario).
+
+[Contribuisci](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) · [Architettura](ARCHITECTURE.md)

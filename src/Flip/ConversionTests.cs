@@ -83,6 +83,25 @@ internal static class ConversionTests
             using (var deepPdf = UglyToad.PdfPig.PdfDocument.Open(deepOutputs.Single())) Check("PDF da cartella profonda conserva testo", deepPdf.GetPage(1).Text.Contains("caffè"));
             string scanned = imageOutputs.First(p => p.EndsWith(".pdf"));
             var scan = await ConversionEngine.Convert([scanned], ["TXT"], CancellationToken.None); Check("PDF senza testo segnala OCR necessario", scan[0].Error != null && scan[0].Error!.Contains("OCR"));
+            string jsonFile = Path.Combine(root, "utenti.json");
+            File.WriteAllText(jsonFile, "[{\"nome\":\"Marco\",\"città\":\"Milano\",\"attivo\":true},{\"nome\":\"Giulia\",\"città\":\"Roma\",\"attivo\":false}]", new UTF8Encoding(false));
+            hashes[jsonFile] = Hash(jsonFile);
+            var jsonOutputs = await Do(jsonFile, "YAML", "XML", "CSV", "TXT", "HTML", "MD", "PDF");
+            string csvFromJson = jsonOutputs.First(p => p.EndsWith(".csv"));
+            hashes[csvFromJson] = Hash(csvFromJson);
+            var jsonRoundtrip = await Do(csvFromJson, "JSON");
+            Check("JSON → CSV → JSON conserva dati", File.ReadAllText(jsonRoundtrip.Single()).Contains("Milano") && File.ReadAllText(jsonRoundtrip.Single()).Contains("Giulia"));
+            if (MediaTools.HasFfmpeg)
+            {
+                string wavFile = Path.Combine(root, "tono.wav");
+                File.WriteAllBytes(wavFile, WheelSound.CreateWave());
+                hashes[wavFile] = Hash(wavFile);
+                var audioOutputs = await Do(wavFile, "MP3", "FLAC", "OGG");
+                string mp3File = audioOutputs.First(p => p.EndsWith(".mp3"));
+                hashes[mp3File] = Hash(mp3File);
+                var wavFromMp3 = await Do(mp3File, "WAV");
+                Check("MP3 → WAV produce RIFF WAVE", File.ReadAllBytes(wavFromMp3.Single()).Take(4).SequenceEqual("RIFF"u8.ToArray()));
+            }
             string corrupt = Path.Combine(root, "corrotta.png"); File.WriteAllText(corrupt, "non sono pixel");
             var invalid = await ConversionEngine.Convert([corrupt], ["JPG"], CancellationToken.None); Check("immagine corrotta rifiutata", invalid[0].Error != null && invalid[0].Outputs.Length == 0);
             using (var cancel = new CancellationTokenSource()) { cancel.Cancel(); try { await ConversionEngine.Convert([png], ["PDF"], cancel.Token); Check("cancellazione rispettata", false); } catch (OperationCanceledException) { Check("cancellazione rispettata", true); } }

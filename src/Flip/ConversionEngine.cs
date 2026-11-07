@@ -9,22 +9,32 @@ internal sealed record ConversionResult(string Source, string Format, string[] O
 internal static class ConversionEngine
 {
     static readonly SemaphoreSlim Gate = new(1, 1);
-    internal static async Task<List<ConversionResult>> Convert(string[] paths, string[] formats, CancellationToken token, Action<string>? progress = null)
+    internal static async Task<List<ConversionResult>> Convert(string[] paths, string[] formats, CancellationToken token, Action<string>? progress = null, Action<int, string>? percentProgress = null)
     {
         if (paths.Length is 0 or > 128) throw new ArgumentException("Seleziona da 1 a 128 file.");
         if (formats.Length == 0 || formats.All(string.IsNullOrWhiteSpace)) throw new ArgumentException("Seleziona almeno un formato di uscita.");
         await Gate.WaitAsync(token);
         var results = new List<ConversionResult>();
+        var distinctFormats = formats.Select(f => f.TrimStart('.').ToUpperInvariant()).Distinct().ToArray();
+        int totalUnits = Math.Max(1, paths.Length * distinctFormats.Length), completedUnits = 0;
         try
         {
             foreach (string source in paths)
-                foreach (string format in formats.Select(f => f.TrimStart('.').ToUpperInvariant()).Distinct())
+                foreach (string format in distinctFormats)
                 {
-                    token.ThrowIfCancellationRequested(); progress?.Invoke(Path.GetFileName(source) + " → " + format);
+                    token.ThrowIfCancellationRequested();
+                    string stepLabel = Path.GetFileName(source) + " → " + format;
+                    progress?.Invoke(stepLabel);
+                    int basePct = (int)Math.Round(completedUnits * 100.0 / totalUnits);
+                    percentProgress?.Invoke(Math.Clamp(basePct, 2, 95), stepLabel);
                     try
                     {
                         if (!Policy.Outputs([source]).Contains(format)) throw new IOException("Conversione non disponibile: " + Path.GetExtension(source) + " → " + format);
-                        if (!File.Exists(source) || new FileInfo(source).Length > 100L * 1024 * 1024) throw new IOException("File assente o oltre il limite di 100 MiB.");
+                        string ext = Path.GetExtension(source).ToLowerInvariant();
+                        bool isMedia = Policy.Audio.Contains(ext) || Policy.Video.Contains(ext);
+                        long maxBytes = isMedia ? 2048L * 1024 * 1024 : 100L * 1024 * 1024;
+                        if (!File.Exists(source) || new FileInfo(source).Length > maxBytes)
+                            throw new IOException(isMedia ? "File assente o oltre il limite di 2 GiB." : "File assente o oltre il limite di 100 MiB.");
                         if (Policy.ReadFiles(new System.Windows.DataObject(System.Windows.DataFormats.FileDrop, new[] { source })).Length == 0)
                             throw new IOException("Sorgente non locale, non disponibile o non sicura.");
                         ValidateContainer(source);
@@ -32,12 +42,30 @@ internal static class ConversionEngine
                         Directory.CreateDirectory(job);
                         try
                         {
-                            var staged = new List<string>(); string ext = Path.GetExtension(source).ToLowerInvariant();
+                            var staged = new List<string>();
                             if (Policy.Images.Contains(ext))
                             {
+                                percentProgress?.Invoke(Math.Clamp(basePct + 25 / totalUnits, 10, 90), stepLabel);
                                 using var bitmap = ReadImage(source);
                                 string output = Path.Combine(job, "output." + Extension(format));
                                 if (format == "PDF") ImagePdf(bitmap, output); else WriteImage(bitmap, output, format);
+                                staged.Add(output);
+                            }
+                            else if (Policy.Data.Contains(ext))
+                            {
+                                percentProgress?.Invoke(Math.Clamp(basePct + 35 / totalUnits, 15, 92), stepLabel);
+                                string output = Path.Combine(job, "output." + Extension(format));
+                                DataTools.Convert(source, format, output);
+                                staged.Add(output);
+                            }
+                            else if (isMedia)
+                            {
+                                string output = Path.Combine(job, "output." + Extension(format));
+                                await MediaTools.Convert(source, format, output, token, p =>
+                                {
+                                    int mapped = (int)Math.Round((completedUnits + p / 100.0) * 100.0 / totalUnits);
+                                    percentProgress?.Invoke(Math.Clamp(mapped, 3, 98), stepLabel);
+                                });
                                 staged.Add(output);
                             }
                             else if ((ext == ".pdf" || Policy.Documents.Contains(ext)) && format is "PNG" or "JPG" or "WEBP")
@@ -50,7 +78,15 @@ internal static class ConversionEngine
                                 int page = 0;
                                 foreach (var bitmap in PDFtoImage.Conversion.ToImages(pdf, options: new PDFtoImage.RenderOptions(Dpi: 144, Width: 1800, Height: 2400, WithAspectRatio: true)))
                                 {
-                                    using (bitmap) { token.ThrowIfCancellationRequested(); string output = Path.Combine(job, $"page-{++page:000}." + Extension(format)); WriteImage(bitmap, output, format); staged.Add(output); }
+                                    using (bitmap)
+                                    {
+                                        token.ThrowIfCancellationRequested();
+                                        string output = Path.Combine(job, $"page-{++page:000}." + Extension(format));
+                                        WriteImage(bitmap, output, format);
+                                        staged.Add(output);
+                                        int mapped = (int)Math.Round((completedUnits + (double)page / Math.Max(1, pages)) * 100.0 / totalUnits);
+                                        percentProgress?.Invoke(Math.Clamp(mapped, 5, 98), stepLabel);
+                                    }
                                 }
                             }
                             else
@@ -85,6 +121,8 @@ internal static class ConversionEngine
                     }
                     catch (OperationCanceledException) { throw; }
                     catch (Exception ex) { results.Add(new(source, format, [], ex.Message)); Evidence.Log("conversion.failed", new { source, format, error = ex.Message }); }
+                    completedUnits++;
+                    percentProgress?.Invoke((int)Math.Round(completedUnits * 100.0 / totalUnits), stepLabel);
                 }
         }
         finally { Gate.Release(); }
@@ -239,5 +277,14 @@ internal static class ConversionEngine
         if (format == "PDF") { using var pdf = UglyToad.PdfPig.PdfDocument.Open(path); if (pdf.NumberOfPages == 0) throw new IOException("PDF senza pagine."); }
         else if (format is "PNG" or "JPG" or "WEBP" or "BMP" or "TIFF" or "GIF") { using var bitmap = ReadImage(path); if (bitmap.Width == 0) throw new IOException("Output immagine non valido."); }
         else if (format is "DOCX" or "EPUB" or "ODT") { using var zip = System.IO.Compression.ZipFile.OpenRead(path); if (zip.Entries.Count == 0) throw new IOException("Documento vuoto."); }
+        else if (format == "JSON") { using var doc = System.Text.Json.JsonDocument.Parse(File.ReadAllBytes(path)); }
+        else if (format == "XML") { _ = System.Xml.Linq.XDocument.Load(path); }
+        else if (format == "WAV")
+        {
+            byte[] header = new byte[12];
+            using var fs = File.OpenRead(path);
+            if (fs.Read(header, 0, 12) < 12 || Encoding.ASCII.GetString(header, 0, 4) != "RIFF" || Encoding.ASCII.GetString(header, 8, 4) != "WAVE")
+                throw new IOException("Output WAV non valido.");
+        }
     }
 }

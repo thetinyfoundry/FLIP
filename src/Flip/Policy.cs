@@ -27,8 +27,12 @@ internal static class Policy
 {
     internal static readonly string[] Images = [".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".gif"];
     internal static readonly string[] Documents = [".txt", ".md", ".markdown", ".html", ".htm", ".docx", ".odt", ".rtf", ".epub", ".rst", ".fb2"];
-    internal static string[] Outputs(IEnumerable<string> paths) => Outputs(paths, DocumentTools.HasPandoc, DocumentTools.HasOffice);
-    internal static string[] Outputs(IEnumerable<string> paths, bool pandoc, bool office)
+    internal static readonly string[] Audio = [".mp3", ".wav", ".flac", ".ogg", ".m4a", ".aac", ".wma", ".opus"];
+    internal static readonly string[] Video = [".mp4", ".mkv", ".webm", ".avi", ".mov", ".wmv", ".m4v"];
+    internal static readonly string[] Data = [".json", ".yaml", ".yml", ".xml", ".csv"];
+    internal static string[] Outputs(IEnumerable<string> paths) => Outputs(paths, DocumentTools.HasPandoc, DocumentTools.HasOffice, MediaTools.HasFfmpeg);
+    internal static string[] Outputs(IEnumerable<string> paths, bool pandoc, bool office) => Outputs(paths, pandoc, office, MediaTools.HasFfmpeg);
+    internal static string[] Outputs(IEnumerable<string> paths, bool pandoc, bool office, bool ffmpeg)
     {
         var all = paths.ToArray(); if (all.Length is 0 or > 128) return [];
         IEnumerable<string>? shared = null;
@@ -36,10 +40,13 @@ internal static class Policy
         {
             var ext = Path.GetExtension(p).ToLowerInvariant();
             string[] targets = Images.Contains(ext) ? ["PNG", "JPG", "WEBP", "PDF", "BMP", "TIFF", "GIF"] :
+                Data.Contains(ext) ? ["JSON", "YAML", "XML", "CSV", "TXT", "HTML", "MD", "PDF"] :
+                Audio.Contains(ext) && ffmpeg ? ["WAV", "MP3", "FLAC", "OGG", "M4A", "AAC"] :
+                Video.Contains(ext) && ffmpeg ? ["MP4", "MP3", "WAV", "MKV", "WEBM", "AVI", "MOV"] :
                 ext == ".pdf" ? (pandoc ? ["PNG", "JPG", "WEBP", "TXT", "DOCX", "MD", "HTML", "EPUB", "ODT", "RTF", "FB2", "RST"] : ["PNG", "JPG", "WEBP", "TXT"]) :
                 ext == ".txt" && !pandoc ? ["PDF", "PNG", "JPG", "WEBP"] :
                 Documents.Contains(ext) && pandoc ? (office || ext == ".txt" ? ["PDF", "DOCX", "EPUB", "MD", "HTML", "TXT", "ODT", "RTF", "PNG", "JPG", "WEBP", "FB2", "RST"] : ["DOCX", "EPUB", "MD", "HTML", "TXT", "ODT", "RTF", "FB2", "RST"]) : [];
-            string same = ext.TrimStart('.') switch { "jpeg" => "JPG", "tif" => "TIFF", "markdown" => "MD", "htm" => "HTML", var e => e.ToUpperInvariant() };
+            string same = ext.TrimStart('.') switch { "jpeg" => "JPG", "tif" => "TIFF", "markdown" => "MD", "htm" => "HTML", "yml" => "YAML", var e => e.ToUpperInvariant() };
             targets = targets.Where(t => t != same).ToArray();
             shared = shared == null ? targets : shared.Intersect(targets);
         }
@@ -53,8 +60,12 @@ internal static class Policy
             .Select(p => Path.GetExtension(p).TrimStart('.').ToUpperInvariant())
             .Select(e => string.IsNullOrEmpty(e) ? "senza estensione" : e.Length > 18 ? e[..18] : e)
             .Distinct().Take(4).ToArray();
+        var listed = unsupported.Length > 0 ? unsupported : paths
+            .Select(p => Path.GetExtension(p).TrimStart('.').ToUpperInvariant())
+            .Select(e => string.IsNullOrEmpty(e) ? "senza estensione" : e.Length > 18 ? e[..18] : e)
+            .Distinct().Take(4).ToArray();
         return (paths.Length == 1 ? "1 file selezionato" : $"{paths.Length} file selezionati") +
-            (unsupported.Length > 0 ? "\nNon supportati: " + string.Join(", ", unsupported) : "") +
+            (unsupported.Length > 0 ? "\nNon supportati: " + string.Join(", ", unsupported) : listed.Length > 0 ? "\nFormati incompatibili: " + string.Join(", ", listed) : "") +
             "\nNessun formato comune";
     }
     internal static string[] ReadFiles(IDataObject data)

@@ -15,8 +15,12 @@ Sono supportati entrambi gli ordini: trascina e poi premi il tasto, oppure tieni
 
 Per installare da sorgente: `.\scripts\Build.ps1`, poi `.\scripts\Install.ps1`. L'installer crea collegamenti Desktop/Start e abilita l'avvio con Windows per default; `-NoShortcuts` e `-NoStartup` permettono di escluderli. Servono .NET 10 SDK x64 per compilare e Desktop Runtime 10 x64 per eseguire un pacchetto senza SDK. Installazione per utente, senza servizio amministratore. [Guida completa](docs/WINDOWS-INSTALL.md).
 
-La ruota mostra tutte le uscite disponibili. Con Pandoc, un TXT offre PDF, DOCX, EPUB, MD, HTML, ODT, RTF, PNG, JPG, WEBP, FB2 e RST.
-Pages non è un'uscita implementata con gli strumenti Windows scelti. Audio/video e OCR non sono inclusi.
+La ruota mostra tutte le uscite disponibili e, durante la conversione, visualizza un anello di caricamento animato con raggio e percentuale in tempo reale.
+- **Immagini**: PNG, JPG, WEBP, PDF, BMP, TIFF, GIF.
+- **Dati strutturati (nativo)**: JSON, YAML, XML e CSV convertibili tra loro e verso TXT, HTML, MD e PDF.
+- **Audio e Video (con FFmpeg locale)**: Audio (MP3, WAV, FLAC, OGG, M4A, AAC) e Video (MP4, MKV, WEBM, AVI, MOV, oltre all'estrazione rapida dell'audio in MP3 o WAV).
+- **Documenti**: Con Pandoc, un TXT offre PDF, DOCX, EPUB, MD, HTML, ODT, RTF, PNG, JPG, WEBP, FB2 e RST.
+Pages e OCR non sono inclusi. Dal menu dell'icona nella barra di sistema è anche possibile verificare la presenza di nuove versioni su GitHub.
 
 ## Cosa significa pubblicare la beta
 La repo pubblica serve a condividere il codice, ricevere segnalazioni e permettere ad altri di compilarlo. Un archivio dei sorgenti non è un installer.

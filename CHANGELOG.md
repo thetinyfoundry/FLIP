@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0-beta.1
+
+- Add native structured-data conversions for JSON, YAML, XML and CSV (into JSON, YAML, XML, CSV, TXT, HTML, Markdown and PDF) without external dependencies.
+- Add audio conversions (MP3, WAV, FLAC, OGG, M4A, AAC) and video conversions/audio extraction (MP4, MKV, WebM, AVI, MOV, plus MP3/WAV audio extraction) powered by local FFmpeg.
+- Keep the radial wheel open during active conversions with an animated circular progress arc, radial sweep line, live percentage counter and Escape cancellation.
+- Add a GitHub release update check in the tray context menu (`Verifica aggiornamenti su GitHub…`).
+
 ## 0.4.0-beta.3
 
 - Add tray Settings with arrow presets and custom single-key capture; default to Down Arrow on new installations.

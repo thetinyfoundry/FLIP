@@ -48,6 +48,9 @@ Output names include `.converted` and a number when needed. FLIP does not overwr
 | Input | Outputs |
 | --- | --- |
 | PNG, JPG/JPEG, WebP, BMP, TIFF, GIF | PNG, JPG, WebP, PDF, BMP, TIFF, GIF, except the input format |
+| JSON, YAML/YML, XML, CSV | JSON, YAML, XML, CSV, TXT, HTML, Markdown, PDF (built-in, no external engine needed) |
+| MP3, WAV, FLAC, OGG, M4A, AAC, WMA, OPUS | WAV, MP3, FLAC, OGG, M4A, AAC with local FFmpeg |
+| MP4, MKV, WebM, AVI, MOV, WMV, M4V | MP4, MKV, WebM, AVI, MOV, plus MP3 and WAV audio extraction with local FFmpeg |
 | TXT | PDF, PNG, JPG, WebP with the core; DOCX, EPUB, Markdown, HTML, ODT, RTF, FB2, RST with Pandoc |
 | Markdown, HTML, DOCX, EPUB, ODT, RTF, FB2, RST | Other document formats with Pandoc; rendering to PDF/images also needs LibreOffice |
 | PDF | PNG/JPG/WebP per page and extracted TXT; other document formats with Pandoc |

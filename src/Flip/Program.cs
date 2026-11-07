@@ -126,6 +126,7 @@ internal sealed class Host : Window, IDisposable
         startupItem.CheckedChanged += (_, _) => { if (changingStartup) return; try { StartupIntegration.SetEnabled(startupItem.Checked); } catch (Exception ex) { changingStartup = true; startupItem.Checked = StartupIntegration.Enabled; changingStartup = false; Toast(ex.Message); } };
         menu.Opening += (_, _) => { changingStartup = true; startupItem.Checked = StartupIntegration.Enabled; changingStartup = false; };
         menu.Items.Add(startupItem);
+        menu.Items.Add("Verifica aggiornamenti su GitHub…", null, (_, _) => Dispatcher.BeginInvoke(() => _ = CheckUpdatesAsync()));
         menu.Items.Add("Annulla conversione", null, (_, _) => job?.Cancel());
         menu.Items.Add("Esci da Flip", null, (_, _) => Dispatcher.BeginInvoke(Exit));
         tray.ContextMenuStrip = menu; tray.DoubleClick += (_, _) => Dispatcher.BeginInvoke(() => ShowPanel([]));
@@ -176,7 +177,7 @@ internal sealed class Host : Window, IDisposable
     {
         hwnd = new WindowInteropHelper(this).Handle; source = HwndSource.FromHwnd(hwnd); source.AddHook(Messages);
         RegisterRaw();
-        Evidence.Log("host.start", new { pid = Environment.ProcessId, buttonsSwapped = Native.ButtonsSwapped, wheelShortcut.Name, DocumentTools.Pandoc, DocumentTools.Office });
+        Evidence.Log("host.start", new { pid = Environment.ProcessId, buttonsSwapped = Native.ButtonsSwapped, wheelShortcut.Name, DocumentTools.Pandoc, DocumentTools.Office, MediaTools.Ffmpeg });
         _ = Listen();
         if (args.Contains("--measure-idle")) MeasureIdle();
         Dispatcher.BeginInvoke(() =>
@@ -187,6 +188,36 @@ internal sealed class Host : Window, IDisposable
             else if (args.Contains("--ui")) ShowPanel([]);
             else if (!args.Contains("--background")) Toast("Flip è pronto. Trascina un file e premi " + triggerName + ". Per più uscite usa il menu dell'icona.");
         });
+    }
+    async Task CheckUpdatesAsync()
+    {
+        try
+        {
+            var info = await UpdateChecker.CheckLatestAsync(lifetime.Token);
+            Evidence.Log("update.check", info);
+            if (info.IsNewer)
+            {
+                var answer = MessageBox.Show(
+                    UiText.Get(preferences,
+                        $"È disponibile una nuova versione di Flip su GitHub!\n\nVersione installata: {info.CurrentVersion}\nNuova versione: {info.TagName} ({info.Name})\n\nVuoi aprire la pagina di download?",
+                        $"A new version of Flip is available on GitHub!\n\nInstalled: {info.CurrentVersion}\nLatest: {info.TagName} ({info.Name})\n\nOpen the download page?"),
+                    "Flip — Aggiornamento",
+                    MessageBoxButton.YesNo,
+                    MessageBoxImage.Information);
+                if (answer == MessageBoxResult.Yes) UpdateChecker.OpenBrowser(info.HtmlUrl);
+            }
+            else
+            {
+                Toast(UiText.Get(preferences,
+                    $"Flip è aggiornato ({info.CurrentVersion}). Ultima release GitHub: {info.TagName}.",
+                    $"Flip is up to date ({info.CurrentVersion}). Latest GitHub release: {info.TagName}."));
+            }
+        }
+        catch (Exception ex)
+        {
+            Evidence.Log("update.error", ex.Message);
+            Toast(UiText.Get(preferences, "Impossibile verificare gli aggiornamenti su GitHub.", "Could not check GitHub updates."));
+        }
     }
     void MeasureIdle()
     {
@@ -231,7 +262,7 @@ internal sealed class Host : Window, IDisposable
             if (files.Length == 0) { Toast("Seleziona file locali disponibili."); return; }
             if (Policy.Outputs(files).Length == 0) { Toast(Policy.AvailabilityMessage(files)); return; }
         }
-        wheel = new Wheel(Toast, (paths, format) => Start(paths, [format]), sound.Play);
+        wheel = new Wheel(Toast, (paths, format) => Start(paths, [format]), sound.Play, CancelJob);
         wheel.Closed += (_, _) => { wheel = null; release.Stop(); watchdog.Stop(); shortcutOrder.Reset(); SetMouseListening(false); };
         SetMouseListening(true); wheel.Open(files, dragging); watchdog.Start();
     }
@@ -240,21 +271,38 @@ internal sealed class Host : Window, IDisposable
         if (busy) { Toast("Una conversione è già in corso."); return; }
         if (files.Length == 0 || formats.Length == 0) { Toast("Seleziona almeno un file e un formato."); return; }
         busy = true; job = new CancellationTokenSource();
+        release.Stop(); watchdog.Stop();
         panel?.SetBusy(true); work = RunJob(files, formats, job.Token);
     }
     async Task RunJob(string[] files, string[] formats, CancellationToken token)
     {
         try
         {
-            var results = await Task.Run(() => ConversionEngine.Convert(files, formats, token, message => Dispatcher.BeginInvoke(() => panel?.SetProgress(message))), token);
+            var results = await Task.Run(() => ConversionEngine.Convert(
+                files,
+                formats,
+                token,
+                message => Dispatcher.BeginInvoke(() => panel?.SetProgress(message)),
+                (pct, step) => Dispatcher.BeginInvoke(() => { wheel?.SetConversionProgress(pct, step); panel?.SetProgress($"{step} ({pct}%)"); })), token);
             var outputs = results.SelectMany(r => r.Outputs).ToArray(); var errors = results.Where(r => r.Error != null).ToArray();
             if (outputs.Length > 0) lastFolder = Path.GetDirectoryName(outputs[0]);
+            wheel?.CompleteConversion(errors.Length == 0 && outputs.Length > 0);
             string summary = $"{outputs.Length} file creati" + (errors.Length > 0 ? $", {errors.Length} conversioni non riuscite." : ".");
             panel?.SetResults(results); var folders = outputs.Select(Path.GetDirectoryName).Distinct(StringComparer.OrdinalIgnoreCase).ToArray(); Toast(summary + (folders.Length == 1 ? " Destinazione: " + folders[0] : folders.Length > 1 ? " Ogni copia è nella cartella del rispettivo originale." : ""));
             if (errors.Length > 0 && panel == null) { ShowPanel(files); panel?.SetResults(results); }
         }
-        catch (OperationCanceledException) { Toast("Conversione annullata. Gli originali sono intatti."); panel?.SetProgress("Annullata. Le conversioni già completate restano salvate."); }
-        catch (Exception ex) { Toast(ex.Message); Evidence.Log("job.error", ex.ToString()); }
+        catch (OperationCanceledException)
+        {
+            wheel?.Dismiss("cancelled");
+            Toast("Conversione annullata. Gli originali sono intatti.");
+            panel?.SetProgress("Annullata. Le conversioni già completate restano salvate.");
+        }
+        catch (Exception ex)
+        {
+            wheel?.CompleteConversion(false);
+            Toast(ex.Message);
+            Evidence.Log("job.error", ex.ToString());
+        }
         finally { busy = false; panel?.SetBusy(false); job?.Dispose(); job = null; }
     }
     internal static void OpenFolder(string folder) { Evidence.Log("folder.open.request", folder); var p = new ProcessStartInfo("explorer.exe") { UseShellExecute = false }; p.ArgumentList.Add(folder); Process.Start(p); }

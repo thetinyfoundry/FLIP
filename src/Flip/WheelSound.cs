@@ -1,39 +1,68 @@
 using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
+using System.Windows.Media;
+
 namespace Flip;
-// Original procedural sound. No recordings or assets from other applications.
+
+// Original procedural sound from v0.4.0-beta.3.
 internal sealed class WheelSound : IDisposable
 {
+    readonly string? soundPath;
     readonly GCHandle wave;
+    readonly MediaPlayer mediaPlayer = new();
     [DllImport("winmm.dll", EntryPoint = "PlaySoundW", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     static extern bool PlaySound(nint data, nint module, uint flags);
-    bool unavailable;
+    bool mediaReady;
     bool disposed;
-    int attempts;
+
     internal bool Enabled { get; set; }
+
     internal WheelSound(bool enabled)
     {
         Enabled = enabled;
-        wave = GCHandle.Alloc(CreateWave(), GCHandleType.Pinned);
-        Evidence.Log("sound.initialized", new { enabled, backend = "winmm-memory" });
-    }
-    internal void Play()
-    {
-        if (disposed) return;
-        if (!Enabled) { Evidence.Log("sound.skipped", "disabled"); return; }
-        if (unavailable) { Evidence.Log("sound.skipped", "unavailable"); return; }
+        byte[] raw = CreateWave();
+        wave = GCHandle.Alloc(raw, GCHandleType.Pinned);
         try
         {
-            // SND_ASYNC | SND_MEMORY | SND_NODEFAULT. Restart the short tick;
-            // never queue stale hover feedback or suppress valid sector changes.
-            bool accepted = PlaySound(wave.AddrOfPinnedObject(), 0, 0x7); attempts++;
-            if (!accepted) Evidence.Log("sound.rejected", new { attempt = attempts });
-            else if (attempts == 1) Evidence.Log("sound.requested", new { attempt = attempts, backend = "winmm-memory" });
+            string appData = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Flip");
+            Directory.CreateDirectory(appData);
+            soundPath = Path.Combine(appData, "flip-tick.wav");
+            File.WriteAllBytes(soundPath, raw);
+
+            mediaPlayer.Volume = 1.0;
+            mediaPlayer.MediaOpened += (_, _) => mediaReady = true;
+            mediaPlayer.Open(new Uri(soundPath, UriKind.Absolute));
+            Evidence.Log("sound.initialized", new { enabled, backend = "WPF-MediaPlayer-original" });
         }
-        catch (Exception ex) { unavailable = true; Evidence.Log("sound.unavailable", ex.Message); }
+        catch (Exception ex)
+        {
+            Evidence.Log("sound.init.error", ex.Message);
+        }
     }
+
+    internal void Play()
+    {
+        if (disposed || !Enabled) return;
+        try
+        {
+            if (mediaReady)
+            {
+                mediaPlayer.Position = TimeSpan.Zero;
+                mediaPlayer.Play();
+            }
+            else
+            {
+                PlaySound(wave.AddrOfPinnedObject(), 0, 0x7);
+            }
+        }
+        catch
+        {
+            try { PlaySound(wave.AddrOfPinnedObject(), 0, 0x7); } catch { }
+        }
+    }
+
     internal static byte[] CreateWave()
     {
         const int rate = 44100, count = 1764; // 40 ms original dry tick, mono PCM16
@@ -54,5 +83,13 @@ internal sealed class WheelSound : IDisposable
         }
         writer.Flush(); return output.ToArray();
     }
-    public void Dispose() { if (disposed) return; disposed = true; PlaySound(0, 0, 0); wave.Free(); }
+
+    public void Dispose()
+    {
+        if (disposed) return;
+        disposed = true;
+        try { mediaPlayer.Close(); } catch { }
+        try { PlaySound(0, 0, 0); } catch { }
+        if (wave.IsAllocated) wave.Free();
+    }
 }

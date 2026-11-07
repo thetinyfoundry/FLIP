@@ -16,8 +16,8 @@ internal sealed class Wheel : Window
     readonly Canvas canvas = new() { Width = 420, Height = 420 };
     readonly TextBlock center = new()
     {
-        Width = 176,
-        MaxHeight = 72,
+        Width = 172,
+        MaxHeight = 96,
         TextTrimming = TextTrimming.CharacterEllipsis,
         TextAlignment = TextAlignment.Center,
         Foreground = Brushes.White,
@@ -26,34 +26,78 @@ internal sealed class Wheel : Window
         IsHitTestVisible = false
     };
     readonly List<System.Windows.Shapes.Path> sectors = [];
-    static readonly string[] preferred = ["DOCX", "PDF", "HTML", "MD", "TXT", "RTF", "ODT", "EPUB", "FB2", "RST", "JPG", "PNG", "WEBP", "BMP", "TIFF", "GIF"];
+    static readonly string[] preferred =
+    [
+        "DOCX", "PDF", "HTML", "MD", "TXT", "RTF", "ODT", "EPUB", "FB2", "RST",
+        "JSON", "YAML", "XML", "CSV",
+        "JPG", "PNG", "WEBP", "BMP", "TIFF", "GIF",
+        "MP4", "MP3", "WAV", "MKV", "WEBM", "AVI", "MOV", "FLAC", "OGG", "M4A", "AAC"
+    ];
     string[] slots = [];
     string[] files = [], formats = [];
     int selected = -1;
-    bool dropping, closing;
+    bool dropping, closing, converting;
+    double displayedPercent, targetPercent;
+    string activeFormat = "";
+    System.Windows.Shapes.Path? progressArc;
+    Line? progressRay;
+    Ellipse? progressTip;
+    DispatcherTimer? progressTimer;
     readonly Action<string> report;
     readonly Action<string[], string>? convert;
     readonly Action? playSound;
+    readonly Action? cancelConversion;
     internal bool IsDragMode => dropping;
-    internal Wheel(Action<string> report, Action<string[], string>? convert = null, Action? playSound = null)
+    internal bool IsConverting => converting;
+
+    internal Wheel(Action<string> report, Action<string[], string>? convert = null, Action? playSound = null, Action? cancelConversion = null)
     {
-        this.report = report; this.convert = convert; this.playSound = playSound;
+        this.report = report; this.convert = convert; this.playSound = playSound; this.cancelConversion = cancelConversion;
         Title = "Flip";
         Width = Height = 320; WindowStyle = WindowStyle.None; ResizeMode = ResizeMode.NoResize;
         AllowsTransparency = true; Background = new SolidColorBrush(Color.FromArgb(1, 0, 0, 0));
         Topmost = true; ShowInTaskbar = false; ShowActivated = false; AllowDrop = true;
         Content = new Viewbox { Child = canvas, Stretch = Stretch.Uniform };
         PreviewDragEnter += Drag; PreviewDragOver += Drag;
-        PreviewDragLeave += (_, _) => { Native.GetCursorPos(out var cursor); var point = PointFromScreen(new Point(cursor.X, cursor.Y)); if (point.X < 0 || point.Y < 0 || point.X >= ActualWidth || point.Y >= ActualHeight) { Highlight(-1); Evidence.Log("ole.leave"); } };
+        PreviewDragLeave += (_, _) =>
+        {
+            if (converting) return;
+            Native.GetCursorPos(out var cursor);
+            var point = PointFromScreen(new Point(cursor.X, cursor.Y));
+            if (point.X < 0 || point.Y < 0 || point.X >= ActualWidth || point.Y >= ActualHeight)
+            {
+                Highlight(-1);
+                Evidence.Log("ole.leave");
+            }
+        };
         PreviewDrop += DropFiles;
-        PreviewKeyDown += (_, e) => { if (e.Key == Key.Escape) Dismiss("escape-focused"); else if (e.Key is Key.Right or Key.Down) { Highlight((selected + 1) % Math.Max(1, formats.Length)); e.Handled = true; } else if (e.Key is Key.Left or Key.Up) { Highlight((selected - 1 + formats.Length) % Math.Max(1, formats.Length)); e.Handled = true; } else if (e.Key == Key.Enter) { Choose(selected, "keyboard"); e.Handled = true; } };
-        MouseMove += (_, e) => { if (!dropping) Highlight(Hit(e.GetPosition(canvas))); };
-        MouseLeftButtonUp += (_, e) => { if (!dropping) Choose(Hit(e.GetPosition(canvas)), "click"); };
+        PreviewKeyDown += (_, e) =>
+        {
+            if (e.Key == Key.Escape) Dismiss("escape-focused");
+            else if (!converting && (e.Key is Key.Right or Key.Down || (e.Key == Key.Tab && (Keyboard.Modifiers & ModifierKeys.Shift) == 0)))
+            {
+                Highlight((selected + 1) % Math.Max(1, formats.Length));
+                e.Handled = true;
+            }
+            else if (!converting && (e.Key is Key.Left or Key.Up || (e.Key == Key.Tab && (Keyboard.Modifiers & ModifierKeys.Shift) != 0)))
+            {
+                Highlight((selected - 1 + formats.Length) % Math.Max(1, formats.Length));
+                e.Handled = true;
+            }
+            else if (!converting && e.Key is Key.Enter or Key.Space)
+            {
+                Choose(selected, "keyboard");
+                e.Handled = true;
+            }
+        };
+        MouseMove += (_, e) => { if (!dropping && !converting) Highlight(Hit(e.GetPosition(canvas))); };
+        MouseLeftButtonUp += (_, e) => { if (!dropping && !converting) Choose(Hit(e.GetPosition(canvas)), "click"); };
+        Closed += (_, _) => progressTimer?.Stop();
     }
 
     internal void Open(string[] sources, bool drag)
     {
-        dropping = drag; files = sources; formats = OrderFormats(Policy.Outputs(files)); closing = false;
+        dropping = drag; converting = false; files = sources; formats = OrderFormats(Policy.Outputs(files)); closing = false;
         Paint(); Show(); Native.Position(new WindowInteropHelper(this).Handle);
         BeginAnimation(OpacityProperty, new DoubleAnimation(0, 1, TimeSpan.FromMilliseconds(120)));
         if (!drag) { Activate(); Focus(); }
@@ -108,10 +152,12 @@ internal sealed class Wheel : Window
             + "\n\nFlip\nEsc per annullare";
         if (files.Length > 0 && formats.Length == 0) center.Text = Policy.AvailabilityMessage(files);
         center.ToolTip = files.Length > 0 ? string.Join("\n", files) : "Avvia un trascinamento di file locali";
-        Canvas.SetLeft(center, 122); Canvas.SetTop(center, 174); canvas.Children.Add(center);
+        Canvas.SetLeft(center, 124); Canvas.SetTop(center, 166); canvas.Children.Add(center);
     }
+
     internal static string[] OrderFormats(IEnumerable<string> outputs) => preferred.Where(outputs.Contains).Concat(outputs.Except(preferred)).ToArray();
     static Brush Rest() => new LinearGradientBrush(Color.FromArgb(200, 73, 77, 76), Color.FromArgb(190, 44, 48, 48), 90);
+
     internal static Geometry SectorData(int index, int count = 8)
     {
         double span = 360.0 / count, gap = Math.Min(2, span * .06);
@@ -127,6 +173,153 @@ internal sealed class Wheel : Window
         fig.Segments.Add(new QuadraticBezierSegment(At(98, start), At(105, start), true));
         return new PathGeometry([fig]);
     }
+
+    internal static Geometry ProgressArcData(double percent, double radius = 91)
+    {
+        double clamped = Math.Clamp(percent, 0.8, 99.9);
+        double deg = clamped * 3.6 - 90.0;
+        double rad = deg * Math.PI / 180.0;
+        Point start = new(210, 210 - radius);
+        Point end = new(210 + radius * Math.Cos(rad), 210 + radius * Math.Sin(rad));
+        var fig = new PathFigure { StartPoint = start, IsClosed = false };
+        fig.Segments.Add(new ArcSegment(end, new Size(radius, radius), 0, clamped > 50.0, SweepDirection.Clockwise, true));
+        return new PathGeometry([fig]);
+    }
+
+    void StartProgressVisual(string chosenFormat)
+    {
+        converting = true;
+        dropping = false;
+        AllowDrop = false;
+        activeFormat = chosenFormat;
+        displayedPercent = 4;
+        targetPercent = 12;
+
+        for (int i = 0; i < sectors.Count; i++)
+        {
+            bool isTarget = slots[i] == chosenFormat;
+            sectors[i].Fill = isTarget ? new SolidColorBrush(Color.FromRgb(255, 112, 12)) : Rest();
+            sectors[i].Opacity = isTarget ? 1.0 : 0.22;
+        }
+
+        var trackRing = new Ellipse
+        {
+            Width = 182,
+            Height = 182,
+            Stroke = new SolidColorBrush(Color.FromArgb(55, 255, 255, 255)),
+            StrokeThickness = 5,
+            IsHitTestVisible = false
+        };
+        Canvas.SetLeft(trackRing, 119);
+        Canvas.SetTop(trackRing, 119);
+        canvas.Children.Add(trackRing);
+
+        progressRay = new Line
+        {
+            Stroke = new SolidColorBrush(Color.FromArgb(170, 255, 165, 60)),
+            StrokeThickness = 2.2,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            IsHitTestVisible = false
+        };
+        canvas.Children.Add(progressRay);
+
+        progressArc = new System.Windows.Shapes.Path
+        {
+            Stroke = new SolidColorBrush(Color.FromRgb(255, 136, 24)),
+            StrokeThickness = 5.5,
+            StrokeStartLineCap = PenLineCap.Round,
+            StrokeEndLineCap = PenLineCap.Round,
+            IsHitTestVisible = false
+        };
+        canvas.Children.Add(progressArc);
+
+        progressTip = new Ellipse
+        {
+            Width = 9,
+            Height = 9,
+            Fill = new SolidColorBrush(Color.FromRgb(255, 210, 130)),
+            IsHitTestVisible = false
+        };
+        canvas.Children.Add(progressTip);
+
+        UpdateProgressVisual();
+
+        progressTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(50) };
+        progressTimer.Tick += (_, _) =>
+        {
+            if (!converting || closing) return;
+            if (displayedPercent < targetPercent)
+                displayedPercent = Math.Min(targetPercent, displayedPercent + Math.Max(0.8, (targetPercent - displayedPercent) * 0.28));
+            else if (displayedPercent < 88)
+                displayedPercent += (88 - displayedPercent) * 0.025;
+            UpdateProgressVisual();
+        };
+        progressTimer.Start();
+    }
+
+    void UpdateProgressVisual()
+    {
+        if (progressArc == null || progressRay == null || progressTip == null) return;
+        double pct = Math.Clamp(displayedPercent, 1, 99.9);
+        progressArc.Data = ProgressArcData(pct, 91);
+
+        double rad = (pct * 3.6 - 90.0) * Math.PI / 180.0;
+        double cos = Math.Cos(rad), sin = Math.Sin(rad);
+        progressRay.X1 = 210 + 66 * cos;
+        progressRay.Y1 = 210 + 66 * sin;
+        progressRay.X2 = 210 + 91 * cos;
+        progressRay.Y2 = 210 + 91 * sin;
+
+        Canvas.SetLeft(progressTip, 210 + 91 * cos - 4.5);
+        Canvas.SetTop(progressTip, 210 + 91 * sin - 4.5);
+
+        string sourceLabel = files.Length == 1 ? System.IO.Path.GetFileName(files[0]) : $"{files.Length} file";
+        if (sourceLabel.Length > 20) sourceLabel = sourceLabel[..19] + "…";
+        int shownPct = Math.Clamp((int)Math.Round(displayedPercent), 1, 99);
+        center.Text = $"{sourceLabel}\n→ {activeFormat}  ({shownPct}%)\nConversione in corso…\nEsc per annullare";
+    }
+
+    internal void SetConversionProgress(int percent, string? step = null)
+    {
+        if (!converting || closing) return;
+        targetPercent = Math.Clamp(percent, (int)targetPercent, 99);
+        if (targetPercent > displayedPercent)
+            displayedPercent = Math.Max(displayedPercent, targetPercent - 8);
+        UpdateProgressVisual();
+    }
+
+    internal void CompleteConversion(bool success)
+    {
+        if (closing) return;
+        progressTimer?.Stop();
+        displayedPercent = 100;
+        targetPercent = 100;
+        if (progressArc != null && progressRay != null && progressTip != null)
+        {
+            var color = success ? Color.FromRgb(46, 204, 113) : Color.FromRgb(231, 76, 60);
+            var brush = new SolidColorBrush(color);
+            progressArc.Stroke = brush;
+            progressArc.Data = ProgressArcData(99.9, 91);
+            progressRay.Stroke = brush;
+            progressTip.Fill = brush;
+        }
+        string sourceLabel = files.Length == 1 ? System.IO.Path.GetFileName(files[0]) : $"{files.Length} file";
+        if (sourceLabel.Length > 20) sourceLabel = sourceLabel[..19] + "…";
+        center.Text = success
+            ? $"{sourceLabel}\n✓ {activeFormat} (100%)\nCompletato!"
+            : $"{sourceLabel}\n✕ {activeFormat}\nErrore conversione";
+
+        var closeTimer = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(360) };
+        closeTimer.Tick += (_, _) =>
+        {
+            closeTimer.Stop();
+            converting = false;
+            Dismiss("conversion-completed");
+        };
+        closeTimer.Start();
+    }
+
     internal void SavePreview(string path, string source, bool hover, string[]? sources = null)
     {
         files = sources ?? [source]; formats = OrderFormats(Policy.Outputs(files)); Paint(); if (hover && formats.Length > 0) Highlight(0);
@@ -135,23 +328,28 @@ internal sealed class Wheel : Window
         var encoder = new PngBitmapEncoder(); encoder.Frames.Add(BitmapFrame.Create(bitmap));
         using var output = File.Create(path); encoder.Save(output);
     }
+
     int Hit(Point point)
     {
         for (int i = 0; i < sectors.Count; i++)
             if (formats.Contains(slots[i]) && sectors[i].Data.FillContains(point)) return Array.IndexOf(formats, slots[i]);
         return -1;
     }
+
     void Highlight(int index)
     {
+        if (converting) return;
         if (index < 0 || index >= formats.Length) index = -1;
         if (selected == index) return;
         for (int i = 0; i < sectors.Count; i++) sectors[i].Fill = index >= 0 && slots[i] == formats[index] ? new SolidColorBrush(Color.FromRgb(255, 112, 12)) : Rest();
         selected = index;
         if (index >= 0) playSound?.Invoke();
     }
+
     void Drag(object sender, DragEventArgs e)
     {
         e.Handled = true; e.Effects = DragDropEffects.None;
+        if (converting) return;
         try
         {
             var incoming = Policy.ReadFiles(e.Data);
@@ -166,9 +364,11 @@ internal sealed class Wheel : Window
         }
         catch (Exception ex) { Evidence.Log("ole.error", ex.Message); }
     }
+
     void DropFiles(object sender, DragEventArgs e)
     {
         e.Handled = true; e.Effects = DragDropEffects.None;
+        if (converting) return;
         try
         {
             var incoming = Policy.ReadFiles(e.Data);
@@ -181,17 +381,33 @@ internal sealed class Wheel : Window
         }
         catch (Exception ex) { report("Drop rejected: " + ex.Message); Dismiss("drop-error"); }
     }
+
     void Choose(int index, string via)
     {
-        if (index < 0 || index >= formats.Length) return;
+        if (converting || index < 0 || index >= formats.Length) return;
         var selectedFiles = files.ToArray(); var output = formats[index];
         Evidence.Log("selection", new { via, files, output, effect = "Copy" });
-        if (convert != null) Dispatcher.BeginInvoke(() => convert(selectedFiles, output));
-        Dismiss("selection");
+        if (convert != null)
+        {
+            StartProgressVisual(output);
+            Dispatcher.BeginInvoke(() => convert(selectedFiles, output));
+        }
+        else
+        {
+            Dismiss("selection");
+        }
     }
+
     internal void Dismiss(string reason)
     {
         if (closing || !IsVisible) return;
+        if (converting)
+        {
+            if (reason is "primary-button-up" or "watchdog") return;
+            if (reason is "escape" or "escape-focused") cancelConversion?.Invoke();
+            converting = false;
+            progressTimer?.Stop();
+        }
         closing = true; Evidence.Log("wheel.close", reason);
         var animation = new DoubleAnimation(0, TimeSpan.FromMilliseconds(85));
         animation.Completed += (_, _) => Close();

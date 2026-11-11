@@ -8,7 +8,11 @@ param(
 )
 $ErrorActionPreference='Stop'
 $root=Split-Path -Parent $PSScriptRoot
-if(!$Source){$Source=Join-Path $root 'app'}
+if(!$Source){
+    $payload=Join-Path $PSScriptRoot 'payload'
+    if(Test-Path -LiteralPath $payload -PathType Container){$Source=$payload}
+    else{$Source=Join-Path $root 'app'}
+}
 if(!$Destination){$Destination=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Programs\Flip'}
 $Source=[IO.Path]::GetFullPath($Source).TrimEnd('\')
 $Destination=[IO.Path]::GetFullPath($Destination).TrimEnd('\')

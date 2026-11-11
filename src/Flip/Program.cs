@@ -152,6 +152,7 @@ internal sealed class Host : Window, IDisposable
         catch { preferences.Trigger = previous; throw; }
         SetTrigger(next.Id);
         gestureItem.Text = "Gesto " + triggerName + " attivo";
+        panel?.SetWheelShortcut(triggerName);
         Evidence.Log("shortcut.changed", new { next.Id, next.Name });
     }
     void ShowSettings()
@@ -250,6 +251,7 @@ internal sealed class Host : Window, IDisposable
     {
         wheel?.Dismiss("multi-format");
         if (panel == null) { panel = new SelectionWindow(this); panel.Closed += (_, _) => panel = null; }
+        panel.SetWheelShortcut(triggerName);
         if (files.Length > 0) panel.SetFiles(files); panel.Show(); panel.Activate();
     }
     void Open(string[] files, bool dragging)

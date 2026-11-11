@@ -1,8 +1,10 @@
 using System.Diagnostics;
 using System.IO;
+using System.IO.Compression;
 using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Xml.Linq;
 namespace Flip;
 
 internal static class DocumentTools
@@ -73,6 +75,7 @@ internal static class DocumentTools
             if (Office == null) throw new IOException("Per i PDF dei documenti serve LibreOffice locale.");
             string docx = Path.Combine(job, "prepared.docx");
             await Run(Pandoc, ["--sandbox", "--standalone", "--from", from, "--to", "docx", "--output", docx, input], token);
+            SetA4PageSize(docx);
             await OfficePdf(docx, staged, job, token); return;
         }
         string to = target switch { "TXT" => "plain", "MD" => "gfm", "HTML" => "html5", _ => target.ToLowerInvariant() };
@@ -89,6 +92,40 @@ internal static class DocumentTools
         await Run(Pandoc, args, token);
         if (!File.Exists(staged) || new FileInfo(staged).Length == 0) throw new IOException("Il modulo non ha prodotto un file valido.");
     }
+    static void SetA4PageSize(string docx)
+    {
+        XNamespace word = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        using var archive = ZipFile.Open(docx, ZipArchiveMode.Update);
+        var entry = archive.GetEntry("word/document.xml") ?? throw new IOException("Il documento temporaneo non contiene word/document.xml.");
+        XDocument document;
+        using (var input = entry.Open()) document = XDocument.Load(input, LoadOptions.PreserveWhitespace);
+        var body = document.Root?.Element(word + "body") ?? throw new IOException("Il documento temporaneo non contiene il corpo del testo.");
+        var finalSection = body.Element(word + "sectPr");
+        if (finalSection == null) body.Add(new XElement(word + "sectPr"));
+        foreach (var section in body.Descendants(word + "sectPr"))
+        {
+            var size = section.Element(word + "pgSz");
+            if (size == null)
+            {
+                size = new XElement(word + "pgSz");
+                var previous = section.Elements().LastOrDefault(e => e.Name.Namespace == word &&
+                    e.Name.LocalName is "headerReference" or "footerReference" or "footnotePr" or "endnotePr" or "type");
+                if (previous == null) section.AddFirst(size);
+                else previous.AddAfterSelf(size);
+            }
+
+            // OOXML stores page dimensions in twentieths of a point.
+            bool landscape = (string?)size.Attribute(word + "orient") == "landscape";
+            size.SetAttributeValue(word + "w", landscape ? 16838 : 11906);
+            size.SetAttributeValue(word + "h", landscape ? 11906 : 16838);
+            size.SetAttributeValue(word + "code", null);
+        }
+
+        entry.Delete();
+        using var output = archive.CreateEntry("word/document.xml").Open();
+        document.Save(output, SaveOptions.DisableFormatting);
+    }
+
     static async Task OfficePdf(string input, string staged, string job, CancellationToken token)
     {
         // LibreOffice creates deep paths inside its profile; keep these independent of the source folder depth.

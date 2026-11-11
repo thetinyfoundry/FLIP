@@ -1,4 +1,4 @@
-# Publication status — 7 November 2026
+# Publication status — 12 November 2026
 
 The public repository contains the application source, build and installation scripts, assets, MIT license, component notices and documentation.
 
@@ -12,6 +12,6 @@ Pandoc and FFmpeg are optional engines:
 - LibreOffice is a separate optional installation for Office/PDF rendering.
 - The built-in core supports images and structured data (JSON, YAML, XML, CSV) with zero external tools.
 
-The current version is **0.5.0-beta.1**.
+The current version is **0.5.1**.
 
-The [Windows package v0.5.0-beta.1](https://github.com/thetinyfoundry/FLIP/releases/tag/v0.5.0-beta.1) is published on GitHub with verified SHA256 checksums and release binaries.
+The [Windows package v0.5.1](https://github.com/thetinyfoundry/FLIP/releases/tag/v0.5.1) includes the Windows x64 ZIP and its SHA-256 checksum. Local validation covered the extracted installer, 100 input checks, 117 conversion checks and the wheel shortcut hint in the multiple-conversion window.

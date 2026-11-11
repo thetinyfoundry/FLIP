@@ -12,7 +12,7 @@ namespace Flip;
 
 internal static class MediaTools
 {
-    static string? FindFfmpeg()
+    static string? FindFfmpeg(string localAppData)
     {
         var local = Path.Combine(AppContext.BaseDirectory, "tools", "ffmpeg.exe");
         if (File.Exists(local)) return local;
@@ -45,7 +45,12 @@ internal static class MediaTools
 
         try
         {
-            string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+            string userTools = Path.Combine(localAppData, "Flip", "tools", "ffmpeg.exe");
+            if (File.Exists(userTools)) return userTools;
+
+            string installedTools = Path.Combine(localAppData, "Programs", "Flip", "tools", "ffmpeg.exe");
+            if (File.Exists(installedTools)) return installedTools;
+
             string wingetLink = Path.Combine(localAppData, "Microsoft", "WinGet", "Links", "ffmpeg.exe");
             if (File.Exists(wingetLink)) return wingetLink;
 
@@ -71,7 +76,7 @@ internal static class MediaTools
         return null;
     }
 
-    internal static readonly string? Ffmpeg = FindFfmpeg();
+    internal static readonly string? Ffmpeg = FindFfmpeg(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
     internal static bool HasFfmpeg => Ffmpeg != null;
 
     static readonly Regex DurationRegex = new(@"Duration:\s*(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)", RegexOptions.Compiled | RegexOptions.CultureInvariant);

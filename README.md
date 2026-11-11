@@ -2,13 +2,20 @@
 
 Convert a file without leaving Explorer. Drag it, press **Down Arrow**, and drop it on a format in the wheel. FLIP saves a new copy beside the original.
 
-FLIP is a local file converter for Windows x64. The current version is **0.5.0-beta.1**.
+FLIP is a local file converter for Windows x64. The current version is **0.5.1**.
 
 ![FLIP conversion wheel](docs/assets/wheel.png)
 
 [Download the demo (MP4)](docs/assets/flip-demo.mp4) · [Italiano](README.it.md) · [Installation guide](docs/WINDOWS-INSTALL.md) · [Changelog](CHANGELOG.md)
 
 ---
+
+## Fixes in 0.5.1
+
+- Fixed direct PowerShell installation from the extracted ZIP. Double-click `Install-FLIP.cmd` for the standard setup.
+- Fixed FFmpeg detection in the documented per-user tools folder, so conversions such as MP4 to MP3 are available when FFmpeg is installed there.
+- DOCX to PDF now defaults to A4.
+- The multiple-conversion window explains how to open the wheel using the configured shortcut.
 
 ## 🌟 What's new in v0.5.0-beta.1
 
@@ -22,14 +29,14 @@ FLIP is a local file converter for Windows x64. The current version is **0.5.0-b
 
 ## Download and install
 
-**[Download FLIP 0.5.0-beta.1 for Windows x64](https://github.com/thetinyfoundry/FLIP/releases/download/v0.5.0-beta.1/Flip-0.5.0-beta.1-win-x64.zip)** · [Release notes and checksum](https://github.com/thetinyfoundry/FLIP/releases/tag/v0.5.0-beta.1)
+**[Download FLIP 0.5.1 for Windows x64](https://github.com/thetinyfoundry/FLIP/releases/download/v0.5.1/Flip-0.5.1-win-x64.zip)** · [Release notes and checksum](https://github.com/thetinyfoundry/FLIP/releases/tag/v0.5.1)
 
-1. Open [Releases](https://github.com/thetinyfoundry/FLIP/releases), download the `Flip-0.5.0-beta.1-win-x64.zip` archive and extract it.
+1. Open [Releases](https://github.com/thetinyfoundry/FLIP/releases), download the `Flip-0.5.1-win-x64.zip` archive and extract it.
 2. Install the [.NET 10 Windows Desktop Runtime x64](https://dotnet.microsoft.com/download/dotnet/10.0) if not already installed.
-3. Double-click `Install-FLIP.cmd` (or run `.\scripts\Install.ps1`). You do not need the SDK or a compiler to run the packaged app.
+3. Exit FLIP from its tray menu if it is running, then double-click `Install-FLIP.cmd` in the extracted folder. Open FLIP from the Desktop or Start menu shortcut. You do not need the SDK or a compiler to run the packaged app.
 
 ### Optional engines:
-- **Audio & Video**: FLIP automatically detects FFmpeg if installed via winget (`winget install Gyan.FFmpeg`) or placed in `%LOCALAPPDATA%\Flip\tools\ffmpeg.exe`.
+- **Audio & Video**: Place `ffmpeg.exe` in `%LOCALAPPDATA%\Flip\tools` and restart FLIP. FLIP also detects FFmpeg installed through WinGet or available on PATH.
 - **Documents (Pandoc & LibreOffice)**: close FLIP and run `Install-DocumentEngine.ps1` from the package to download official Pandoc. LibreOffice provides document rendering.
 
 ---

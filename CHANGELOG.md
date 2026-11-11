@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.1
+
+- Fix `Install.ps1` when run directly from the extracted ZIP. After installing the .NET 10 Windows Desktop Runtime x64, extract the entire ZIP, double-click `Install-FLIP.cmd`, then start FLIP from the Desktop or Start menu shortcut.
+- Detect FFmpeg placed in `%LOCALAPPDATA%\Flip\tools`. Restart FLIP after copying `ffmpeg.exe` to that folder to enable audio and video conversions.
+- Default to A4 when converting DOCX to PDF through Pandoc and LibreOffice.
+- Explain how to open the wheel in the multiple-conversion window, using the configured shortcut.
+
 ## 0.5.0-beta.1
 
 - Add native structured-data conversions for JSON, YAML, XML and CSV (into JSON, YAML, XML, CSV, TXT, HTML, Markdown and PDF) without external dependencies.

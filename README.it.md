@@ -2,9 +2,16 @@
 
 Converti qualsiasi file direttamente da Esplora file. Trascinalo, premi **Freccia giù**, e rilascialo sul formato desiderato nella ruota. Flip salverà una nuova copia convertita accanto all'originale, senza mai sovrascriverla.
 
-Flip è un convertitore locale per Windows x64. La versione attuale è la **0.5.0-beta.1**.
+Flip è un convertitore locale per Windows x64. La versione attuale è la **0.5.1**.
 
 ---
+
+## Correzioni della 0.5.1
+
+- L'installazione diretta da PowerShell funziona anche dallo ZIP estratto. Per l'installazione standard, fai doppio clic su `Install-FLIP.cmd`.
+- FLIP rileva FFmpeg nella cartella utente indicata nella guida e abilita conversioni come MP4 in MP3.
+- I PDF ottenuti da DOCX usano il formato A4.
+- Il pannello di conversione multipla spiega come aprire la ruota con il tasto configurato.
 
 ## 🌟 Novità della versione 0.5.0-beta.1
 
@@ -27,14 +34,14 @@ Flip è un convertitore locale per Windows x64. La versione attuale è la **0.5.
 
 ## Scarica e installa
 
-**[Scarica FLIP 0.5.0-beta.1 per Windows x64 (ZIP)](https://github.com/thetinyfoundry/FLIP/releases/download/v0.5.0-beta.1/Flip-0.5.0-beta.1-win-x64.zip)** · [Note di rilascio e checksum SHA256](https://github.com/thetinyfoundry/FLIP/releases/tag/v0.5.0-beta.1)
+**[Scarica FLIP 0.5.1 per Windows x64 (ZIP)](https://github.com/thetinyfoundry/FLIP/releases/download/v0.5.1/Flip-0.5.1-win-x64.zip)** · [Note di rilascio e checksum SHA256](https://github.com/thetinyfoundry/FLIP/releases/tag/v0.5.1)
 
 1. Scarica l'archivio ZIP da [GitHub Releases](https://github.com/thetinyfoundry/FLIP/releases) ed estrailo in una cartella.
 2. Installa il [.NET 10 Windows Desktop Runtime x64](https://dotnet.microsoft.com/download/dotnet/10.0) se non è già presente sul sistema.
-3. Fai doppio clic su `Install-FLIP.cmd` (oppure esegui `.\scripts\Install.ps1`). L'app viene installata in `%LOCALAPPDATA%\Programs\Flip` e si avvia automaticamente.
+3. Se FLIP è aperto, chiudilo dal menu dell'icona vicino all'orologio. Fai doppio clic su `Install-FLIP.cmd` nella cartella estratta. L'app si installa in `%LOCALAPPDATA%\Programs\Flip` e puoi aprirla dal collegamento sul Desktop o nel menu Start.
 
 ### Motori aggiuntivi facoltativi:
-- **Audio & Video (FFmpeg)**: Flip rileva automaticamente FFmpeg se installato nel sistema (ad esempio tramite `winget install Gyan.FFmpeg`) o inserito in `%LOCALAPPDATA%\Flip\tools\ffmpeg.exe`.
+- **Audio & Video (FFmpeg)**: Copia `ffmpeg.exe` in `%LOCALAPPDATA%\Flip\tools` e riavvia FLIP. FLIP rileva anche FFmpeg installato tramite WinGet o disponibile nel PATH.
 - **Documenti avanzati (Pandoc & LibreOffice)**: chiudi Flip ed esegui `Install-DocumentEngine.ps1` per scaricare automaticamente l'eseguibile ufficiale di Pandoc verificandone l'hash SHA256. LibreOffice può essere installato a parte per il rendering di PDF e formati Office.
 
 ---

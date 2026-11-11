@@ -9,7 +9,10 @@ FLIP for Windows x64
 FLIP installs for your user in %LOCALAPPDATA%\Programs\Flip.
 The installer creates shortcuts and enables startup with Windows by default.
 Change startup from the tray menu. To opt out during installation, run
-Install.ps1 -Source .\payload -NoStartup -NoShortcuts from PowerShell.
+.\Install.ps1 -NoStartup -NoShortcuts from PowerShell in the extracted folder.
+
+To open the wheel, drag a file in Explorer and press Down Arrow (or your
+configured shortcut) before releasing the file.
 
 The launcher uses a process-only PowerShell policy override for these local
 installation scripts. It does not change the computer's stored execution policy.
@@ -21,6 +24,10 @@ It downloads official Pandoc 3.12.1 directly from its publisher, verifies its
 SHA256 and preserves its license notices. Pandoc is not inside this ZIP.
 LibreOffice is a separate optional installation for document-to-PDF rendering:
 https://www.libreoffice.org/download/download-libreoffice/
+
+Optional audio and video engine:
+Copy ffmpeg.exe to %LOCALAPPDATA%\Flip\tools and restart FLIP. FLIP also
+detects FFmpeg installed through WinGet or available on PATH.
 
 Core image conversions, TXT rendering and PDF extraction do not need Pandoc.
 See the repository's format table for what needs each optional component.

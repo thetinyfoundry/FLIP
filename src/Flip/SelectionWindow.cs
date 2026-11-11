@@ -14,15 +14,20 @@ internal sealed class SelectionWindow : Window
     readonly Button run = new() { Content = "Converti", Padding = new Thickness(24, 9, 24, 9), IsEnabled = false };
     readonly List<CheckBox> boxes = [];
     readonly Button browse = new() { Content = "Scegli file…", Padding = new Thickness(15, 8, 15, 8), HorizontalAlignment = HorizontalAlignment.Left };
+    readonly TextBlock wheelHint = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 0, 0, 12) };
     bool busy;
     string[] paths = [];
+    internal void SetWheelShortcut(string shortcut) =>
+        wheelHint.Text = $"Per aprire la ruota, trascina un file da Esplora file e premi {shortcut} prima di rilasciarlo.";
+
     internal SelectionWindow(Host host)
     {
         this.host = host; Title = "Flip — conversione multipla"; Width = 760; Height = 680; MinWidth = 570; MinHeight = 570; WindowStartupLocation = WindowStartupLocation.CenterScreen;
         Background = new SolidColorBrush(Color.FromRgb(27, 29, 32)); Foreground = Brushes.White;
         var panel = new StackPanel { Margin = new Thickness(26) }; Content = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto };
         panel.Children.Add(new TextBlock { Text = "Flip", FontSize = 30, FontWeight = FontWeights.Bold });
-        panel.Children.Add(new TextBlock { Text = "Converti localmente. Le copie saranno salvate accanto agli originali.", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 12) });
+        panel.Children.Add(new TextBlock { Text = "Converti localmente. Le copie saranno salvate accanto agli originali.", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 4, 0, 4) });
+        panel.Children.Add(wheelHint);
         browse.Click += (_, _) => { var picker = new Microsoft.Win32.OpenFileDialog { Multiselect = true, Filter = "Tutti i file|*.*" }; if (picker.ShowDialog(this) == true) SetFiles(picker.FileNames); };
         panel.Children.Add(browse); panel.Children.Add(filesList);
         panel.Children.Add(new TextBlock { Text = "Formati di uscita", FontSize = 17, FontWeight = FontWeights.SemiBold }); panel.Children.Add(formatsPanel);

@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
@@ -110,13 +111,6 @@ public static class TriggerAndOsSection
             selected => SettingsStore.Current.Update(s => s.TriggerKey = selected.Value));
         stackTrigger.Children.Add(comboTrigger);
 
-        var toggleDrag = HubUi.CreateToggle(
-            Loc.T("Solo durante il trascinamento", "Only while dragging"),
-            Loc.T("Evita aperture accidentali.", "Prevents accidental triggers."),
-            settings.RequireDragButton,
-            active => SettingsStore.Current.Update(s => s.RequireDragButton = active));
-        stackTrigger.Children.Add(toggleDrag);
-
         var toggleSecondaryButton = HubUi.CreateToggle(
             Loc.T("Accetta anche il tasto destro", "Allow right-click drag"),
             Loc.T("Utile con mouse verticali.", "Handy for vertical mice and custom grips."),
@@ -158,22 +152,30 @@ public static class TriggerAndOsSection
         txtClip.Margin = new Thickness(0, 0, 0, 12);
         stackSystem.Children.Add(txtClip);
 
-        var toggleAutoStart = HubUi.CreateToggle(
+        CheckBox? toggleAutoStart = null;
+        toggleAutoStart = HubUi.CreateToggle(
             Loc.T("Avvia FLIP con Windows", "Launch FLIP at startup"),
             Loc.T("Parte in background nell'area di notifica.", "Starts quietly in the system tray."),
-            settings.StartWithWindows,
-            active =>
+            ReadState(() => StartupIntegration.Enabled),
+            active => ApplyOrRevert(toggleAutoStart, active, () =>
             {
+                StartupIntegration.SetEnabled(active);
                 SettingsStore.Current.Update(s => s.StartWithWindows = active);
-                try { StartupIntegration.SetEnabled(active); } catch { }
-            });
+            }));
         stackSystem.Children.Add(toggleAutoStart);
 
-        var toggleContextMenu = HubUi.CreateToggle(
+        CheckBox? toggleContextMenu = null;
+        toggleContextMenu = HubUi.CreateToggle(
             Loc.T("Voce \"Converti con FLIP\" nel menu contestuale", "Add \"Convert with FLIP\" to context menu"),
-            Loc.T("Clic destro su un file in Esplora file.", "Right-click any file in File Explorer."),
-            settings.EnableExplorerContextMenu,
-            active => SettingsStore.Current.Update(s => s.EnableExplorerContextMenu = active));
+            StoreEdition.IsPackaged
+                ? Loc.T("Clic destro su un file in Esplora file.", "Right-click any file in File Explorer.")
+                : Loc.T("Clic destro su un file in Esplora file (Windows 11: \"Mostra altre opzioni\").", "Right-click any file in File Explorer (Windows 11: \"Show more options\")."),
+            ReadState(() => ShellIntegration.Enabled),
+            active => ApplyOrRevert(toggleContextMenu, active, () =>
+            {
+                ShellIntegration.Apply(remove: !active);
+                SettingsStore.Current.Update(s => s.EnableExplorerContextMenu = active);
+            }));
         stackSystem.Children.Add(toggleContextMenu);
 
         root.Children.Add(cardSystem);
@@ -268,6 +270,36 @@ public static class TriggerAndOsSection
         root.Children.Add(cardGaze);
 
         return root;
+    }
+
+    // Conta lo stato reale di Windows, non quello ricordato: l'utente può cambiarlo anche altrove.
+    private static bool ReadState(Func<bool> read)
+    {
+        try { return read(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException or System.Runtime.InteropServices.COMException)
+        {
+            Evidence.Log("integration.read.error", ex.Message);
+            return false;
+        }
+    }
+
+    private static bool reverting;
+
+    private static void ApplyOrRevert(CheckBox? toggle, bool active, Action apply)
+    {
+        if (reverting) return;
+        try { apply(); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or System.Security.SecurityException or InvalidOperationException or System.Runtime.InteropServices.COMException)
+        {
+            Evidence.Log("integration.change.error", ex.Message);
+            FirstRunWelcomeWindow.TrayNotifier?.Invoke(ex.Message);
+            toggle?.Dispatcher.BeginInvoke(() =>
+            {
+                reverting = true;
+                try { toggle.IsChecked = !active; }
+                finally { reverting = false; }
+            });
+        }
     }
 }
 

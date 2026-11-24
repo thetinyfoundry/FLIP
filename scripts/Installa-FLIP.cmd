@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-echo Avvio installazione FLIP v0.6.3 (AURA Edition)...
+echo Avvio installazione FLIP v1.0.1...
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install.ps1"
 if errorlevel 1 (
   echo.

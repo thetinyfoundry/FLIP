@@ -1,8 +1,37 @@
 # Changelog
 
-Tutte le novità principali del progetto **FLIP** sono documentate in questo file.
+Notable changes to **FLIP**. Versions before 1.0.0 were distributed only on GitHub.
 
 ---
+
+## [1.0.1] - 2026-11-25
+
+First public 1.0 release. Version 1.0.0 was a private Microsoft Store test.
+
+From this version the GitHub and Microsoft Store editions share the same number and are released together.
+
+### Added
+- **Microsoft Store edition.** An MSIX package with .NET, FFmpeg and Whisper included, Windows startup task, Windows 11 context menu and Store updates. The GitHub edition stays available. See [docs/MICROSOFT-STORE.md](docs/MICROSOFT-STORE.md).
+- **Support card.** *Guide & Shortcuts* links to Buy Me a Coffee. Support is voluntary and unlocks nothing.
+- **Privacy policy.** [PRIVACY.md](PRIVACY.md) lists what stays on the PC and when FLIP uses the network.
+
+### Fixed
+- **Files and settings.** Previewing SVG, DXF or ICO no longer uses the output settings, which could overwrite a PNG. Unreadable settings are backed up and valid values recovered. Undo restores originals moved to the Recycle Bin.
+- **Tables and data.** CSV files with `;` or `sep=`, ANSI text, duplicate columns, long codes and decimals such as `1.50` are kept. XML mixed text, JSONL with BOM and INI root keys are kept. XLSX dates stay dates and JSON → XLSX keeps every column. CSV → TOML and INI now work.
+- **Documents.** HTML with nested blocks, RTF punctuation, Markdown headings and front matter convert correctly. Documents keep their own title. Generated ODT files open in Pandoc.
+- **Excel to PDF.** XLSX, XLSM, XLTX, XLS and ODS become PDF, CSV and other tables without LibreOffice. Every visible sheet is printed as a table, with dates, currencies, colors and merged cells. Tables saved as `.xls` by other programs also open. If LibreOffice fails, FLIP uses this reader. PDF is now on the main ring of the wheel for spreadsheets.
+- **PDF to images.** Pages keep their proportions.
+- **PDF.** Merge and Strip Metadata copy pages instead of turning them into images. Phone photos keep their orientation.
+- **Images.** ICC colors, semitransparent pixels and icon proportions are preserved.
+- **Audio and video.** H.264 output plays in common players. Compress to size uses the real duration and reports progress. Long videos no longer stop after 20 minutes. Impossible MIDI and APE outputs are no longer offered.
+- **Archives.** GitHub `.tar.gz` files open. Canceling 7z stops the process and removes its temporary files.
+- **Watch folders.** Several rules on one folder, read-only files and long copies work. Watchers are not recreated after each conversion, and updates wait for them.
+- **Batches.** One failed format no longer cancels the other selected formats.
+- **Settings Hub.** The File Explorer menu and Windows startup switches show and change the real state. The unused drag-only switch is removed.
+- **Store engines.** A Whisper program chosen by the user is preferred to the bundled one. Whisper, background-removal models and engines downloaded by the GitHub edition are found again, so moving to the Store needs no new downloads.
+- **Uninstaller.** `Disinstalla-FLIP.cmd` removes the File Explorer menu entry and keeps Pandoc in `%AppData%\FLIP\Engines`.
+- **Memory.** The background-removal model is released after one minute without use.
+- **Downloads.** FFmpeg, Whisper and fallback engine downloads are verified with SHA256.
 
 ## [0.6.3] - 2026-11-24 ("AURA Edition")
 

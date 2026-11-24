@@ -1,0 +1,35 @@
+name: Store package
+# Crea il pacchetto Microsoft Store e lo prova su una macchina Windows temporanea. Non pubblica nulla.
+on:
+  workflow_dispatch:
+  push:
+    branches: ['store/**']
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: windows-2025
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+      - name: Restore
+        run: dotnet restore src/Flip/Flip.csproj --locked-mode -r win-x64
+      - name: Build the package
+        shell: powershell
+        run: ./scripts/Package-Store.ps1 -OutputRoot "$env:RUNNER_TEMP\store"
+      - name: Install and test the package
+        shell: powershell
+        run: |
+          $package = Get-ChildItem "$env:RUNNER_TEMP\store" -Filter *.msix | Select-Object -First 1
+          ./scripts/Test-StorePackage.ps1 -Package $package.FullName -Evidence "$env:RUNNER_TEMP\evidence"
+      - name: Show App Control events
+        if: always()
+        shell: powershell
+        run: |
+          $log = "$env:RUNNER_TEMP\evidence\code-integrity.txt"
+          if (Test-Path $log) { Get-Content $log -TotalCount 40 }

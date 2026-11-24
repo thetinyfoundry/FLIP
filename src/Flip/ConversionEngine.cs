@@ -2,6 +2,7 @@ using System.IO;
 using System.Text;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
+using Flip.Core;
 using SkiaSharp;
 namespace Flip;
 
@@ -76,7 +77,7 @@ internal static class ConversionEngine
                                 int pages = PDFtoImage.Conversion.GetPageCount(pdf);
                                 if (pages > 200) throw new IOException("PDF oltre il limite di 200 pagine.");
                                 int page = 0;
-                                foreach (var bitmap in PDFtoImage.Conversion.ToImages(pdf, options: new PDFtoImage.RenderOptions(Dpi: 144, Width: 1800, Height: 2400, WithAspectRatio: true)))
+                                foreach (var bitmap in PDFtoImage.Conversion.ToImages(pdf, options: PdfPages.RenderOptions(pdf)))
                                 {
                                     using (bitmap)
                                     {
@@ -188,18 +189,15 @@ internal static class ConversionEngine
         if (codec != null)
         {
             if ((long)codec.Info.Width * codec.Info.Height > 40_000_000) throw new IOException("Immagine oltre il limite di 40 megapixel.");
-            using var decoded = new SKBitmap(new SKImageInfo(codec.Info.Width, codec.Info.Height, SKColorType.Bgra8888, SKAlphaType.Premul));
-            var result = codec.GetPixels(decoded.Info, decoded.GetPixels());
+            var result = ImagePixels.Decode(codec, out SKBitmap pixels);
+            using var decoded = pixels;
             if (result != SKCodecResult.Success) throw new IOException("Immagine corrotta o incompleta: " + result);
             return Orient(decoded, codec.EncodedOrigin);
         }
         using var memory = new MemoryStream(bytes);
         var decoder = BitmapDecoder.Create(memory, BitmapCreateOptions.PreservePixelFormat, BitmapCacheOption.OnDemand);
         var frame = decoder.Frames[0]; if ((long)frame.PixelWidth * frame.PixelHeight > 40_000_000) throw new IOException("Immagine oltre il limite di 40 megapixel.");
-        var converted = new FormatConvertedBitmap(frame, PixelFormats.Bgra32, null, 0);
-        var bitmap = new SKBitmap(frame.PixelWidth, frame.PixelHeight, SKColorType.Bgra8888, SKAlphaType.Premul);
-        converted.CopyPixels(new System.Windows.Int32Rect(0, 0, frame.PixelWidth, frame.PixelHeight), bitmap.GetPixels(), bitmap.ByteCount, bitmap.RowBytes);
-        return bitmap;
+        return ImagePixels.FromWpf(frame);
     }
     static SKBitmap Orient(SKBitmap source, SKEncodedOrigin origin)
     {
@@ -223,24 +221,15 @@ internal static class ConversionEngine
     {
         if (format is "PNG" or "JPG" or "WEBP")
         {
-            using var flattened = format == "JPG" ? new SKBitmap(bitmap.Width, bitmap.Height, SKColorType.Bgra8888, SKAlphaType.Opaque) : null;
-            if (flattened != null)
-            {
-                using var canvas = new SKCanvas(flattened);
-                canvas.Clear(SKColors.White);
-                canvas.DrawBitmap(bitmap, 0, 0, new SKSamplingOptions());
-            }
+            using var flattened = format == "JPG" ? ImagePixels.FlattenOnWhite(bitmap) : null;
             using var image = SKImage.FromBitmap(flattened ?? bitmap);
             using var encoded = image.Encode(format == "PNG" ? SKEncodedImageFormat.Png : format == "JPG" ? SKEncodedImageFormat.Jpeg : SKEncodedImageFormat.Webp, format == "PNG" ? 100 : 92)
                 ?? throw new IOException("Encoder immagine non disponibile.");
             using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None); encoded.SaveTo(stream); stream.Flush(true);
             return;
         }
-        using var bgra = new SKBitmap(bitmap.Width, bitmap.Height, SKColorType.Bgra8888, SKAlphaType.Premul);
-        using (var canvas = new SKCanvas(bgra)) canvas.DrawBitmap(bitmap, 0, 0, new SKSamplingOptions());
-        var source = BitmapSource.Create(bgra.Width, bgra.Height, 96, 96, PixelFormats.Bgra32, null, bgra.GetPixels(), bgra.ByteCount, bgra.RowBytes);
         BitmapEncoder encoder = format switch { "BMP" => new BmpBitmapEncoder(), "TIFF" => new TiffBitmapEncoder(), "GIF" => new GifBitmapEncoder(), _ => throw new IOException("Encoder non supportato: " + format) };
-        encoder.Frames.Add(BitmapFrame.Create(source)); using var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None); encoder.Save(file); file.Flush(true);
+        ImagePixels.SaveWithWpf(bitmap, path, encoder, FileMode.CreateNew);
     }
     internal static void ImagePdf(SKBitmap bitmap, string path, bool stripMetadata = false)
     {

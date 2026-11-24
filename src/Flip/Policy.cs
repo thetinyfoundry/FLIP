@@ -10,7 +10,7 @@ internal static class Evidence
 {
     static readonly object Sync = new();
     internal static volatile bool Enabled;
-    internal static string DirectoryPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Flip", "logs");
+    internal static string DirectoryPath = Path.Combine(StoreEdition.LocalState ?? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Flip"), "logs");
 
     internal static void Log(string name, object? detail = null)
     {

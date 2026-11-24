@@ -601,7 +601,9 @@ public static class EnginesHubSection
         {
             SettingsStore.Current.Update(s =>
             {
-                if (string.IsNullOrWhiteSpace(val)) s.CustomEnginePaths.Remove(meta.Key);
+                // Il percorso del motore incluso cambia a ogni aggiornamento dello Store: non va salvato.
+                if (string.IsNullOrWhiteSpace(val) || string.Equals(val, StoreEdition.BundledEngine(meta.Key), StringComparison.OrdinalIgnoreCase))
+                    s.CustomEnginePaths.Remove(meta.Key);
                 else s.CustomEnginePaths[meta.Key] = val;
             });
             if (meta.Key == "whisper") WhisperLocator.InvalidateCache();

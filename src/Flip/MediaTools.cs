@@ -6,6 +6,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
+using Flip.Core;
 using System.Xml.Linq;
 using Flip.Engines;
 
@@ -96,6 +97,7 @@ internal static class MediaTools
     internal static bool HasFfmpeg => Ffmpeg != null;
     internal static void Refresh() => Ffmpeg = FindFfmpeg();
 
+    static readonly TimeSpan IdleLimit = TimeSpan.FromMinutes(10);
     static readonly Regex DurationRegex = new(@"Duration:\s*(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
     static readonly Regex TimeRegex = new(@"time=(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)", RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
@@ -131,10 +133,10 @@ internal static class MediaTools
                 args.AddRange(["-vn", "-acodec", "aac", "-b:a", "192k", "-f", "ipod"]);
                 break;
             case "MP4":
-                args.AddRange(["-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart"]);
+                args.AddRange(["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k", "-movflags", "+faststart"]);
                 break;
             case "MKV":
-                args.AddRange(["-c:v", "libx264", "-preset", "fast", "-crf", "23", "-c:a", "aac", "-b:a", "160k"]);
+                args.AddRange(["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p", "-c:a", "aac", "-b:a", "160k"]);
                 break;
             case "WEBM":
                 args.AddRange(["-c:v", "libvpx-vp9", "-crf", "32", "-b:v", "0", "-deadline", "realtime", "-cpu-used", "4", "-c:a", "libopus", "-b:a", "128k"]);
@@ -143,7 +145,7 @@ internal static class MediaTools
                 args.AddRange(["-c:v", "mpeg4", "-q:v", "5", "-c:a", "libmp3lame", "-q:a", "4"]);
                 break;
             case "MOV":
-                args.AddRange(["-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart"]);
+                args.AddRange(["-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2", "-c:v", "libx264", "-preset", "fast", "-crf", "23", "-pix_fmt", "yuv420p", "-c:a", "aac", "-movflags", "+faststart"]);
                 break;
             default:
                 throw new IOException("Formato multimediale non supportato: " + target);
@@ -162,7 +164,8 @@ internal static class MediaTools
 
         using var process = Process.Start(start) ?? throw new IOException("Impossibile avviare FFmpeg.");
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(token);
-        timeout.CancelAfter(TimeSpan.FromMinutes(10));
+        // Un video lungo può richiedere ore: si interrompe solo se FFmpeg non dà segni di vita.
+        timeout.CancelAfter(IdleLimit);
 
         var errorLog = new StringBuilder();
         double totalSeconds = 0;
@@ -176,6 +179,7 @@ internal static class MediaTools
             {
                 int read = await process.StandardError.ReadAsync(buffer.AsMemory(0, buffer.Length), timeout.Token);
                 if (read <= 0) break;
+                timeout.CancelAfter(IdleLimit);
                 string chunk = new(buffer, 0, read);
                 if (errorLog.Length < 16384) errorLog.Append(chunk);
                 lineBuffer.Append(chunk);
@@ -213,7 +217,7 @@ internal static class MediaTools
             try { if (!process.HasExited) process.Kill(true); } catch (InvalidOperationException) { }
             await process.WaitForExitAsync();
             if (!token.IsCancellationRequested)
-                throw new IOException("La conversione multimediale ha superato il tempo massimo di 10 minuti.");
+                throw new IOException("FFmpeg non risponde da 10 minuti: conversione interrotta.");
             throw;
         }
 
@@ -239,7 +243,7 @@ internal static class DataTools
             throw new IOException("File dati oltre il limite di 20 MiB.");
 
         string ext = Path.GetExtension(source).ToLowerInvariant();
-        string raw = File.ReadAllText(source, new UTF8Encoding(false, true));
+        string raw = TextFiles.Read(source);
         if (string.IsNullOrWhiteSpace(raw))
             throw new IOException("Il file sorgente è vuoto.");
 
@@ -256,7 +260,7 @@ internal static class DataTools
         switch (target)
         {
             case "JSON":
-                File.WriteAllText(staged, root?.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) ?? "null", utf8NoBom);
+                File.WriteAllText(staged, root?.ToJsonString(TextFiles.ReadableJson) ?? "null", utf8NoBom);
                 break;
             case "YAML":
                 File.WriteAllText(staged, ToYaml(root, 0), utf8NoBom);
@@ -296,68 +300,11 @@ internal static class DataTools
         }
     }
 
+    // Stessi lettori della ruota: separatore, colonne duplicate e cifre vanno conservati anche da riga di comando.
     static JsonNode ParseCsv(string raw)
     {
-        var rows = ReadCsvRows(raw);
-        if (rows.Count == 0) throw new IOException("CSV vuoto.");
-        var headers = rows[0];
-        var array = new JsonArray();
-        if (rows.Count == 1)
-        {
-            var single = new JsonObject();
-            for (int i = 0; i < headers.Count; i++) single[$"col_{i + 1}"] = headers[i];
-            array.Add(single);
-            return array;
-        }
-        for (int r = 1; r < rows.Count; r++)
-        {
-            var row = rows[r];
-            if (row.All(string.IsNullOrWhiteSpace)) continue;
-            var obj = new JsonObject();
-            for (int c = 0; c < headers.Count; c++)
-            {
-                string key = string.IsNullOrWhiteSpace(headers[c]) ? $"col_{c + 1}" : headers[c].Trim();
-                string val = c < row.Count ? row[c] : "";
-                obj[key] = ParseScalarNode(val);
-            }
-            array.Add(obj);
-        }
-        return array;
-    }
-
-    static List<List<string>> ReadCsvRows(string text)
-    {
-        var result = new List<List<string>>();
-        var row = new List<string>();
-        var cell = new StringBuilder();
-        bool inQuotes = false;
-        for (int i = 0; i < text.Length; i++)
-        {
-            char ch = text[i];
-            if (inQuotes)
-            {
-                if (ch == '"')
-                {
-                    if (i + 1 < text.Length && text[i + 1] == '"') { cell.Append('"'); i++; }
-                    else inQuotes = false;
-                }
-                else cell.Append(ch);
-            }
-            else
-            {
-                if (ch == '"') inQuotes = true;
-                else if (ch == ',') { row.Add(cell.ToString()); cell.Clear(); }
-                else if (ch is '\r' or '\n')
-                {
-                    if (ch == '\r' && i + 1 < text.Length && text[i + 1] == '\n') i++;
-                    row.Add(cell.ToString()); cell.Clear();
-                    result.Add(row); row = [];
-                }
-                else cell.Append(ch);
-            }
-        }
-        if (cell.Length > 0 || row.Count > 0) { row.Add(cell.ToString()); result.Add(row); }
-        return result;
+        if (TextFiles.ReadTable(raw, "csv").Count == 0) throw new IOException("CSV vuoto.");
+        return DataSerializationEngine.ParseDelimited(raw, "csv");
     }
 
     static JsonNode? ParseXml(string raw)
@@ -365,40 +312,12 @@ internal static class DataTools
         try
         {
             var doc = XDocument.Parse(raw);
-            return doc.Root == null ? new JsonObject() : XmlElementToJson(doc.Root);
+            return doc.Root == null ? new JsonObject() : DataSerializationEngine.XmlElementToJson(doc.Root);
         }
         catch (Exception ex)
         {
             throw new IOException("XML non valido: " + ex.Message);
         }
-    }
-
-    static JsonNode? XmlElementToJson(XElement element)
-    {
-        if (!element.HasElements && !element.HasAttributes)
-            return ParseScalarNode(element.Value);
-
-        var obj = new JsonObject();
-        foreach (var attr in element.Attributes())
-            obj["@" + attr.Name.LocalName] = ParseScalarNode(attr.Value);
-
-        foreach (var group in element.Elements().GroupBy(e => e.Name.LocalName))
-        {
-            var items = group.ToList();
-            if (items.Count == 1)
-                obj[group.Key] = XmlElementToJson(items[0]);
-            else
-            {
-                var arr = new JsonArray();
-                foreach (var item in items) arr.Add(XmlElementToJson(item));
-                obj[group.Key] = arr;
-            }
-        }
-
-        if (!element.HasElements && element.HasAttributes && !string.IsNullOrWhiteSpace(element.Value))
-            obj["#text"] = ParseScalarNode(element.Value);
-
-        return obj;
     }
 
     // Same parser as the wheel: nested lists and multi-key items must survive the conversion.
@@ -422,10 +341,7 @@ internal static class DataTools
         if (v.Equals("null", StringComparison.OrdinalIgnoreCase) || v == "~") return null;
         if (v.Equals("true", StringComparison.OrdinalIgnoreCase)) return JsonValue.Create(true);
         if (v.Equals("false", StringComparison.OrdinalIgnoreCase)) return JsonValue.Create(false);
-        if (DataSerializationEngine.IsNumericIdentifier(v)) return JsonValue.Create(v);
-        if (long.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out long l)) return JsonValue.Create(l);
-        if (double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out double d) && !double.IsNaN(d) && !double.IsInfinity(d)) return JsonValue.Create(d);
-        return JsonValue.Create(v);
+        return DataSerializationEngine.ParseNumber(v, allowExponent: true) ?? JsonValue.Create(v);
     }
 
     static string ToYaml(JsonNode? node, int indent)
@@ -458,13 +374,13 @@ internal static class DataTools
             var sb = new StringBuilder();
             foreach (var kv in obj)
             {
-                if (kv.Value is JsonObject or JsonArray)
+                if (kv.Value is JsonObject { Count: > 0 } or JsonArray { Count: > 0 })
                 {
-                    sb.Append(pad).Append(kv.Key).Append(":\n").Append(ToYaml(kv.Value, indent + 1));
+                    sb.Append(pad).Append(YamlKey(kv.Key)).Append(":\n").Append(ToYaml(kv.Value, indent + 1));
                 }
                 else
                 {
-                    sb.Append(pad).Append(kv.Key).Append(": ").Append(ToYaml(kv.Value, 0));
+                    sb.Append(pad).Append(YamlKey(kv.Key)).Append(": ").Append(ToYaml(kv.Value, 0));
                 }
             }
             return sb.ToString();
@@ -491,9 +407,11 @@ internal static class DataTools
             JsonValueKind.False => "false",
             JsonValueKind.Null => "null",
             JsonValueKind.Number => el.GetRawText(),
-            _ => NeedsYamlQuotes(el.GetString() ?? "") ? JsonSerializer.Serialize(el.GetString() ?? "") : (el.GetString() ?? "")
+            _ => NeedsYamlQuotes(el.GetString() ?? "") ? JsonSerializer.Serialize(el.GetString() ?? "", TextFiles.ReadableJsonLine) : (el.GetString() ?? "")
         };
     }
+
+    static string YamlKey(string key) => NeedsYamlQuotes(key) ? JsonSerializer.Serialize(key, TextFiles.ReadableJsonLine) : key;
 
     static bool NeedsYamlQuotes(string s) =>
         string.IsNullOrEmpty(s) || s.Contains(':') || s.Contains('#') || s.Contains('\n') || s.Contains('\r') || s.Contains('"') || s.StartsWith(' ') || s.EndsWith(' ') || s.StartsWith('-') ||
@@ -504,60 +422,9 @@ internal static class DataTools
     static string ToXml(JsonNode? node)
     {
         var root = new XElement("root");
-        PopulateXml(root, node, "item");
+        DataSerializationEngine.PopulateXml(root, node, "item");
         var doc = new XDocument(new XDeclaration("1.0", "utf-8", "yes"), root);
         return doc.ToString();
-    }
-
-    static void PopulateXml(XElement parent, JsonNode? node, string itemName)
-    {
-        if (node is null) return;
-        if (node is JsonValue val)
-        {
-            var el = ReadJsonElement(val);
-            parent.Value = el.ValueKind == JsonValueKind.String ? (el.GetString() ?? "") : el.GetRawText();
-            return;
-        }
-        if (node is JsonArray arr)
-        {
-            foreach (var item in arr)
-            {
-                var child = new XElement(SanitizeXmlName(itemName));
-                PopulateXml(child, item, "item");
-                parent.Add(child);
-            }
-            return;
-        }
-        if (node is JsonObject obj)
-        {
-            foreach (var kv in obj)
-            {
-                if (kv.Key.StartsWith('@') && kv.Value is JsonValue attrVal)
-                {
-                    parent.SetAttributeValue(SanitizeXmlName(kv.Key[1..]), attrVal.ToString());
-                }
-                else if (kv.Value is JsonArray childArr)
-                {
-                    PopulateXml(parent, childArr, kv.Key);
-                }
-                else
-                {
-                    var child = new XElement(SanitizeXmlName(kv.Key));
-                    PopulateXml(child, kv.Value, "item");
-                    parent.Add(child);
-                }
-            }
-        }
-    }
-
-    static string SanitizeXmlName(string name)
-    {
-        if (string.IsNullOrWhiteSpace(name)) return "item";
-        var sb = new StringBuilder();
-        foreach (char c in name)
-            sb.Append(char.IsLetterOrDigit(c) || c is '_' or '-' or '.' ? c : '_');
-        if (!char.IsLetter(sb[0]) && sb[0] != '_') sb.Insert(0, '_');
-        return sb.ToString();
     }
 
     static string ToCsv(JsonNode? node)
@@ -583,7 +450,7 @@ internal static class DataTools
         if (node is JsonObject rootObj)
         {
             var firstArray = rootObj.FirstOrDefault(kv => kv.Value is JsonArray a && a.Count > 0 && a.All(x => x is JsonObject));
-            if (firstArray.Value is JsonArray nestedArr)
+            if (rootObj.Count == 1 && firstArray.Value is JsonArray nestedArr)
                 return ToCsv(nestedArr);
 
             sb.AppendLine("key,value");
@@ -604,7 +471,7 @@ internal static class DataTools
             var el = ReadJsonElement(v);
             return el.ValueKind == JsonValueKind.String ? (el.GetString() ?? "") : el.GetRawText();
         }
-        return node.ToJsonString();
+        return node.ToJsonString(TextFiles.ReadableJsonLine);
     }
 
     static string EscapeCsv(string value)
@@ -615,7 +482,7 @@ internal static class DataTools
     }
 
     static string ToReadableText(JsonNode? node) =>
-        node?.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) ?? "null";
+        node?.ToJsonString(TextFiles.ReadableJson) ?? "null";
 
     static string ToMarkdown(JsonNode? node, string title)
     {
@@ -625,7 +492,7 @@ internal static class DataTools
         if (node is JsonArray arr && arr.Count > 0 && arr.All(x => x is JsonObject))
         {
             var cols = arr.OfType<JsonObject>().SelectMany(o => o.Select(kv => kv.Key)).Distinct().ToList();
-            sb.AppendLine("| " + string.Join(" | ", cols) + " |");
+            sb.AppendLine("| " + string.Join(" | ", cols.Select(c => c.Replace("|", "\\|"))) + " |");
             sb.AppendLine("| " + string.Join(" | ", cols.Select(_ => "---")) + " |");
             foreach (var obj in arr.OfType<JsonObject>())
             {

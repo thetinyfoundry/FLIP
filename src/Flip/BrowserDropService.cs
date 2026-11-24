@@ -267,7 +267,7 @@ public static class BrowserDropService
                 if (File.Exists(targetPath))
                 {
                     string nameNoExt = Path.GetFileNameWithoutExtension(fileName);
-                    targetPath = Path.Combine(stagingDirectory, $"{nameNoExt}_{Guid.NewGuid():N[..8]}.{candidate.GuessedExtension}");
+                    targetPath = Path.Combine(stagingDirectory, $"{nameNoExt}_{Guid.NewGuid().ToString("N")[..8]}.{candidate.GuessedExtension}");
                 }
 
                 await File.WriteAllBytesAsync(targetPath, bytes, ct).ConfigureAwait(false);
@@ -325,7 +325,7 @@ public static class BrowserDropService
             targetFile = Path.Combine(stagingDirectory, fileName);
             if (File.Exists(targetFile))
             {
-                targetFile = Path.Combine(stagingDirectory, $"{Path.GetFileNameWithoutExtension(fileName)}_{Guid.NewGuid():N[..8]}.{effectiveExt}");
+                targetFile = Path.Combine(stagingDirectory, $"{Path.GetFileNameWithoutExtension(fileName)}_{Guid.NewGuid().ToString("N")[..8]}.{effectiveExt}");
             }
 
             using (var stream = await response.Content.ReadAsStreamAsync(ct).ConfigureAwait(false))

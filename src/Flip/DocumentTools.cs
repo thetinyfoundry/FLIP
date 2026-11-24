@@ -3,6 +3,7 @@ using System.IO;
 using System.Net;
 using System.Text;
 using System.Text.RegularExpressions;
+using Flip.Core;
 namespace Flip;
 
 internal static class DocumentTools
@@ -62,9 +63,9 @@ internal static class DocumentTools
     internal static string ReadText(string path)
     {
         if (new FileInfo(path).Length > 2 * 1024 * 1024) throw new IOException("Testo troppo grande: limite 2 MiB.");
-        using var reader = new StreamReader(path, new UTF8Encoding(false, true), true); return reader.ReadToEnd();
+        return TextFiles.Read(path);
     }
-    internal static string HtmlText(string text) => "<!doctype html><html><head><meta charset=\"utf-8\"><title>Documento Flip</title></head><body><pre>" + WebUtility.HtmlEncode(text) + "</pre></body></html>";
+    internal static string HtmlText(string text) => "<!doctype html><html><head><meta charset=\"utf-8\"></head><body><pre>" + WebUtility.HtmlEncode(text) + "</pre></body></html>";
     internal static async Task Convert(string source, string target, string staged, string job, CancellationToken token)
     {
         string ext = Path.GetExtension(source).ToLowerInvariant(), input = source;
@@ -101,7 +102,8 @@ internal static class DocumentTools
         }
         if (Pandoc == null) throw new IOException("Modulo documenti Pandoc non disponibile.");
         string to = target switch { "TXT" => "plain", "MD" => "gfm", "HTML" => "html5", _ => target.ToLowerInvariant() };
-        var args = new List<string> { "--sandbox", "--standalone", "--from", from, "--to", to, "--output", staged, "--metadata", "title=Documento Flip" };
+        var args = new List<string> { "--sandbox", "--standalone", "--from", from, "--to", to, "--output", staged };
+        args.AddRange(PandocTitle(job, to, source));
         if (to == "fb2")
         {
             // FB2 has no code-block element; preserve code/plain-text lines as paragraphs.
@@ -113,6 +115,18 @@ internal static class DocumentTools
         args.Add(input);
         await Run(Pandoc, args, token);
         if (!File.Exists(staged) || new FileInfo(staged).Length == 0) throw new IOException("Il modulo non ha prodotto un file valido.");
+    }
+    /// <summary>
+    /// Titolo di riserva per i formati che lo richiedono. Un file di metadati, a differenza di --metadata,
+    /// non sostituisce il titolo già presente nel documento e non lo stampa nella pagina.
+    /// </summary>
+    internal static string[] PandocTitle(string directory, string to, string source)
+    {
+        string? key = to switch { "html5" or "html" => "pagetitle", "epub" or "fb2" => "title", _ => null };
+        if (key == null) return [];
+        string file = Path.Combine(directory, "flip-title.json");
+        File.WriteAllText(file, System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, string> { [key] = Path.GetFileNameWithoutExtension(source) }), new UTF8Encoding(false));
+        return ["--metadata-file", file];
     }
     static async Task OfficePdf(string input, string staged, string job, CancellationToken token)
     {

@@ -340,7 +340,15 @@ internal static class FlipPreviewService
             try
             {
                 string renderedPng = Path.Combine(directory, baseName + "_preview.png");
-                var res = RoutePlanner.ExecuteRouteAsync(source, "png", saveSettings, ct: token).GetAwaiter().GetResult();
+                // L'anteprima resta nella sua cartella temporanea: con le impostazioni dell'utente potrebbe
+                // sovrascrivere un PNG accanto all'originale o spostare l'originale nel Cestino.
+                var previewSettings = saveSettings.CreateMutableCopy();
+                previewSettings.OutputDirectoryMode = OutputDirectoryMode.CustomFolder;
+                previewSettings.CustomOutputDirectory = directory;
+                previewSettings.ConflictPolicy = ConflictPolicy.AutoNumber;
+                previewSettings.ReplaceOriginalToRecycleBin = false;
+                previewSettings.KeepOnlyIfSmaller = false;
+                var res = RoutePlanner.ExecuteRouteAsync(source, "png", previewSettings.CreateSnapshot(), ct: token).GetAwaiter().GetResult();
                 if (res.Success && File.Exists(res.OutputFilePath))
                 {
                     File.Move(res.OutputFilePath, renderedPng, overwrite: true);

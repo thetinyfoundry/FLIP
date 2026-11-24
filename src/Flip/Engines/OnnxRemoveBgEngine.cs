@@ -92,6 +92,11 @@ public static class OnnxRemoveBgEngine
         if (IsUsableModelFile(defaultPath, MinimumDownloadedModelBytes))
             return defaultPath;
 
+        if (StoreEdition.GitHubEngines is { } shared &&
+            Path.Combine(shared, "RemoveBg", ModelFileName) is var sharedPath &&
+            IsUsableModelFile(sharedPath, MinimumDownloadedModelBytes))
+            return sharedPath;
+
         return null;
     }
 
@@ -225,6 +230,7 @@ public static class OnnxRemoveBgEngine
         finally
         {
             InferenceGate.Release();
+            ScheduleIdleRelease();
         }
 
         cancellationToken.ThrowIfCancellationRequested();
@@ -539,6 +545,12 @@ public static class OnnxRemoveBgEngine
         _cachedSessionGeneration = gen;
         return (session, inputName);
     }
+
+    // Il modello occupa oltre 1 GB: resta pronto per i file successivi e poi libera la memoria.
+    private static readonly TimeSpan IdleLimit = TimeSpan.FromSeconds(60);
+    private static readonly Timer IdleTimer = new(_ => InvalidateSessionCache(), null, Timeout.Infinite, Timeout.Infinite);
+
+    private static void ScheduleIdleRelease() => IdleTimer.Change(IdleLimit, Timeout.InfiniteTimeSpan);
 
     private static void DisposeCachedSessionCore()
     {

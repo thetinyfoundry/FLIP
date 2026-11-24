@@ -9,6 +9,7 @@ public static class OutputPathAllocator
 {
     private static readonly StringComparer PathComparer = StringComparer.OrdinalIgnoreCase;
     private static readonly ConcurrentDictionary<string, byte> Reserved = new(PathComparer);
+    private static readonly ConcurrentDictionary<string, string> RecycledOriginals = new(PathComparer);
     private static readonly string TempRoot = Path.Combine(Path.GetTempPath(), "FLIP", "Jobs");
 
     internal static string GetDownloadsFallbackDirectory()
@@ -229,7 +230,9 @@ public static class OutputPathAllocator
                             throw new IOException("Un output pubblicato è cambiato dopo il salvataggio.");
                     }
                     CloseGuards(sourceGuards);
-                    Recycle(sources, token);
+                    Recycle(sources, token, RecycledOriginals);
+                    foreach (var output in published)
+                        ReplacedSources[output.Path] = sources.Select(source => source.FullName).ToArray();
                     return new(published);
                 }
                 catch (Exception ex)
@@ -271,6 +274,40 @@ public static class OutputPathAllocator
                 Evidence.Log("output.job.cleanup.failed", ex.Message);
             }
         }
+    }
+
+    private static readonly ConcurrentDictionary<string, string[]> ReplacedSources = new(PathComparer);
+
+    /// <summary>
+    /// Rimette al loro posto gli originali spostati nel Cestino per produrre questi file.
+    /// Va chiamato prima di cestinare gli output: annullare non deve lasciare l'utente senza nessuna copia.
+    /// </summary>
+    internal static (int Restored, string[] Missing) RestoreOriginals(IEnumerable<string> outputs)
+    {
+        int restored = 0;
+        var missing = new List<string>();
+        foreach (string source in outputs.SelectMany(output => ReplacedSources.TryRemove(Path.GetFullPath(output), out var paths) ? paths : [])
+            .Distinct(PathComparer).ToArray())
+        {
+            try
+            {
+                if (File.Exists(source)) continue;
+                if (!RecycledOriginals.TryRemove(source, out string? recycled) || !File.Exists(recycled)) { missing.Add(source); continue; }
+                Directory.CreateDirectory(Path.GetDirectoryName(source)!);
+                File.Move(recycled, source, overwrite: false);
+                restored++;
+                // $R contiene i dati, $I la voce mostrata da Esplora file: senza dati la voce resterebbe orfana.
+                string name = Path.GetFileName(recycled);
+                if (name.StartsWith("$R", StringComparison.OrdinalIgnoreCase))
+                    File.Delete(Path.Combine(Path.GetDirectoryName(recycled)!, "$I" + name[2..]));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Evidence.Log("undo.restore.error", new { source, ex.Message });
+                if (!File.Exists(source)) missing.Add(source);
+            }
+        }
+        return (restored, [.. missing]);
     }
 
     private static void CloseGuards(List<FileStream> guards)
@@ -367,7 +404,7 @@ public static class OutputPathAllocator
         return existing.Length;
     }
 
-    private static void Recycle(FileInfo[] sources, CancellationToken token)
+    private static void Recycle(FileInfo[] sources, CancellationToken token, ConcurrentDictionary<string, string>? recycledPaths = null)
     {
         if (!Environment.UserInteractive)
             throw new IOException("Il Cestino richiede una sessione Windows interattiva.");
@@ -375,7 +412,7 @@ public static class OutputPathAllocator
         Exception? failure = null;
         var thread = new Thread(() =>
         {
-            try { RecycleOnSta(sources, token); }
+            try { RecycleOnSta(sources, token, recycledPaths); }
             catch (Exception ex) { failure = ex; }
         }) { IsBackground = true };
         thread.SetApartmentState(ApartmentState.STA);
@@ -384,7 +421,7 @@ public static class OutputPathAllocator
         if (failure != null) throw new IOException(failure.Message, failure);
     }
 
-    private static void RecycleOnSta(FileInfo[] sources, CancellationToken token)
+    private static void RecycleOnSta(FileInfo[] sources, CancellationToken token, ConcurrentDictionary<string, string>? recycledPaths)
     {
         Guid recycleFolderId = new("B7534046-3ECB-4C18-BE4E-64CD4CB7D6AC");
         Guid shellItemId = typeof(IShellItem).GUID;
@@ -413,6 +450,11 @@ public static class OutputPathAllocator
                             {
                                 if (recycled is null || File.Exists(source.FullName))
                                     throw new IOException($"Windows non ha confermato lo spostamento nel Cestino: {source.Name}");
+                                if (recycledPaths != null && recycled.GetDisplayName(0x80058000, out nint name) >= 0)
+                                {
+                                    recycledPaths[source.FullName] = Marshal.PtrToStringUni(name) ?? "";
+                                    Marshal.FreeCoTaskMem(name);
+                                }
                             }
                             finally
                             {
@@ -440,6 +482,7 @@ public static class OutputPathAllocator
     {
         void BindToHandler(nint bindContext, in Guid handler, in Guid interfaceId, out ITransferSource transfer);
         void GetParent(out IShellItem parent);
+        [PreserveSig] int GetDisplayName(uint kind, out nint name);
     }
 
     // The preceding slots are declared in Windows SDK order.

@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.Json.Serialization;
 
 namespace Flip.Core;
@@ -7,13 +8,20 @@ namespace Flip.Core;
 /// <summary>Gestisce le impostazioni di FLIP e le salva atomicamente in %AppData%\FLIP\settings.json.</summary>
 public sealed class SettingsStore
 {
-    public static string DataDirectory { get; } =
+    private static readonly string GitHubDataDirectory =
         Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "FLIP");
+
+    public static string DataDirectory { get; } = StoreEdition.LocalState ?? GitHubDataDirectory;
 
     public static string SettingsFilePath { get; } = Path.Combine(DataDirectory, "settings.json");
 
     private static readonly Lazy<SettingsStore> _lazy =
-        new(() => new SettingsStore(SettingsFilePath, AppPreferences.LegacySettingsFilePath));
+        new(() =>
+        {
+            if (StoreEdition.IsPackaged)
+                StoreEdition.ImportGitHubSettings(SettingsFilePath, Path.Combine(GitHubDataDirectory, "settings.json"));
+            return new SettingsStore(SettingsFilePath, AppPreferences.LegacySettingsFilePath);
+        });
 
     private static SettingsStore? testStore;
     public static SettingsStore Current => testStore ?? _lazy.Value;
@@ -34,6 +42,7 @@ public sealed class SettingsStore
     private readonly string _settingsFilePath;
     private readonly string _legacySettingsFilePath;
     private FlipSettings _settings;
+    private bool _preserveUnreadable;
 
     internal SettingsStore(string settingsFilePath, string legacySettingsFilePath)
     {
@@ -177,17 +186,26 @@ public sealed class SettingsStore
         HashSet<string> fields;
         try
         {
-            (settings, fields) = ReadSettings(_settingsFilePath);
+            (settings, fields) = ReadWithRetry(_settingsFilePath);
         }
         catch (Exception ex) when (ex is FileNotFoundException or DirectoryNotFoundException)
         {
             settings = new FlipSettings();
             fields = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             Evidence.Log("settings.load.error", ex.Message);
+            _preserveUnreadable = true;
             return new FlipSettings();
+        }
+        catch (JsonException ex)
+        {
+            // Un valore sconosciuto (per esempio di una versione più recente) non deve azzerare tutto il resto.
+            Evidence.Log("settings.load.error", ex.Message);
+            _preserveUnreadable = true;
+            if (Salvage(_settingsFilePath) is not { } salvaged) return new FlipSettings();
+            (settings, fields) = salvaged;
         }
 
         bool normalizedOutput = NormalizeOutputDirectoryDefault(settings, fields);
@@ -279,6 +297,55 @@ public sealed class SettingsStore
         return false;
     }
 
+    /// <summary>Un antivirus o un backup può tenere occupato il file per qualche istante all'avvio.</summary>
+    private static (FlipSettings Settings, HashSet<string> Fields) ReadWithRetry(string path)
+    {
+        for (int attempt = 0; ; attempt++)
+        {
+            try { return ReadSettings(path); }
+            catch (IOException ex) when (attempt < 5 && ex is not (FileNotFoundException or DirectoryNotFoundException))
+            {
+                Thread.Sleep(120);
+            }
+        }
+    }
+
+    /// <summary>Recupera le singole proprietà valide di un file che nel complesso non si legge.</summary>
+    private static (FlipSettings Settings, HashSet<string> Fields)? Salvage(string path)
+    {
+        try
+        {
+            if (JsonNode.Parse(File.ReadAllText(path), null, new JsonDocumentOptions { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip }) is not JsonObject source)
+                return null;
+            var valid = new JsonObject();
+            foreach (var (name, value) in source)
+            {
+                try
+                {
+                    _ = new JsonObject { [name] = value?.DeepClone() }.Deserialize<FlipSettings>(_jsonOptions);
+                    valid[name] = value?.DeepClone();
+                }
+                catch (JsonException ex) { Evidence.Log("settings.load.property", new { name, ex.Message }); }
+            }
+            return (valid.Deserialize<FlipSettings>(_jsonOptions)!,
+                valid.Select(property => property.Key).ToHashSet(StringComparer.OrdinalIgnoreCase));
+        }
+        catch (Exception ex) when (ex is JsonException or IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            Evidence.Log("settings.salvage.error", ex.Message);
+            return null;
+        }
+    }
+
+    /// <summary>Prima di riscrivere un file non leggibile ne conserva una copia; senza copia non si scrive.</summary>
+    private void PreserveUnreadableFile()
+    {
+        if (!_preserveUnreadable) return;
+        if (File.Exists(_settingsFilePath))
+            File.Copy(_settingsFilePath, $"{_settingsFilePath}.backup-{DateTime.Now:yyyyMMdd-HHmmss-fff}", overwrite: false);
+        _preserveUnreadable = false;
+    }
+
     private static (FlipSettings Settings, HashSet<string> Fields) ReadSettings(string path)
     {
         using var stream = File.OpenRead(path);
@@ -294,6 +361,7 @@ public sealed class SettingsStore
     private void SaveToDisk(FlipSettings settings)
     {
         Directory.CreateDirectory(Path.GetDirectoryName(_settingsFilePath)!);
+        PreserveUnreadableFile();
         string temp = _settingsFilePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
         try
         {

@@ -71,8 +71,8 @@ public sealed class DataSerializationEngine : IConversionEngine
             string dstExt = (context.TargetExtension ?? Path.GetExtension(dstPath)).TrimStart('.').ToLowerInvariant();
 
             string raw = srcExt == "jsonl"
-                ? new UTF8Encoding(false, true).GetString(File.ReadAllBytes(srcPath))
-                : File.ReadAllText(srcPath, Encoding.UTF8);
+                ? new UTF8Encoding(false, true).GetString(File.ReadAllBytes(srcPath)).TrimStart('\uFEFF')
+                : TextFiles.Read(srcPath);
             if (string.IsNullOrWhiteSpace(raw))
             {
                 return Task.FromResult(new EngineExecutionResult(false, "", "Il file di origine è vuoto."));
@@ -125,8 +125,8 @@ public sealed class DataSerializationEngine : IConversionEngine
         {
             "json" => JsonNode.Parse(raw, new JsonNodeOptions { PropertyNameCaseInsensitive = false }, new JsonDocumentOptions { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip }),
             "jsonl" => ParseJsonl(raw),
-            "csv" => ParseDelimited(raw, ','),
-            "tsv" => ParseDelimited(raw, '\t'),
+            "csv" => ParseDelimited(raw, "csv"),
+            "tsv" => ParseDelimited(raw, "tsv"),
             "xml" => ParseXml(raw),
             "yaml" or "yml" => ParseYaml(raw),
             "toml" => ParseToml(raw),
@@ -156,25 +156,21 @@ public sealed class DataSerializationEngine : IConversionEngine
         return array;
     }
 
-    private static JsonArray ParseDelimited(string raw, char delimiter)
+    internal static JsonArray ParseDelimited(string raw, string extension)
     {
-        var rows = ReadDelimitedRows(raw, delimiter);
+        var rows = TextFiles.ReadTable(raw, extension);
         if (rows.Count == 0) return [];
 
-        var headers = rows[0];
         var array = new JsonArray();
-
         if (rows.Count == 1)
         {
             var single = new JsonObject();
-            for (int i = 0; i < headers.Count; i++)
-            {
-                single[$"col_{i + 1}"] = headers[i];
-            }
+            for (int i = 0; i < rows[0].Count; i++) single[$"col_{i + 1}"] = rows[0][i];
             array.Add(single);
             return array;
         }
 
+        var headers = TextFiles.UniqueHeaders(rows);
         for (int r = 1; r < rows.Count; r++)
         {
             var row = rows[r];
@@ -182,69 +178,11 @@ public sealed class DataSerializationEngine : IConversionEngine
 
             var obj = new JsonObject();
             for (int c = 0; c < headers.Count; c++)
-            {
-                string key = string.IsNullOrWhiteSpace(headers[c]) ? $"col_{c + 1}" : headers[c].Trim();
-                string val = c < row.Count ? row[c] : "";
-                obj[key] = ParseScalar(val);
-            }
+                obj[headers[c]] = ParseCell(c < row.Count ? row[c] : "");
             array.Add(obj);
         }
 
         return array;
-    }
-
-    private static List<List<string>> ReadDelimitedRows(string text, char delimiter)
-    {
-        var result = new List<List<string>>();
-        var row = new List<string>();
-        var cell = new StringBuilder();
-        bool inQuotes = false;
-
-        for (int i = 0; i < text.Length; i++)
-        {
-            char ch = text[i];
-            if (inQuotes)
-            {
-                if (ch == '"')
-                {
-                    if (i + 1 < text.Length && text[i + 1] == '"')
-                    {
-                        cell.Append('"');
-                        i++;
-                    }
-                    else
-                    {
-                        inQuotes = false;
-                    }
-                }
-                else
-                {
-                    cell.Append(ch);
-                }
-            }
-            else
-            {
-                if (ch == '"') inQuotes = true;
-                else if (ch == delimiter) { row.Add(cell.ToString()); cell.Clear(); }
-                else if (ch is '\r' or '\n')
-                {
-                    if (ch == '\r' && i + 1 < text.Length && text[i + 1] == '\n') i++;
-                    row.Add(cell.ToString());
-                    cell.Clear();
-                    result.Add(row);
-                    row = [];
-                }
-                else cell.Append(ch);
-            }
-        }
-
-        if (cell.Length > 0 || row.Count > 0)
-        {
-            row.Add(cell.ToString());
-            result.Add(row);
-        }
-
-        return result;
     }
 
     private static JsonNode? ParseXml(string raw)
@@ -253,14 +191,20 @@ public sealed class DataSerializationEngine : IConversionEngine
         return doc.Root == null ? new JsonObject() : XmlElementToJson(doc.Root);
     }
 
-    private static JsonNode? XmlElementToJson(XElement element)
+    internal static JsonNode? XmlElementToJson(XElement element)
     {
-        if (!element.HasElements && !element.HasAttributes)
-            return ParseScalar(element.Value);
+        var attributes = element.Attributes().Where(attribute => !attribute.IsNamespaceDeclaration).ToList();
+        if (!element.HasElements && attributes.Count == 0)
+            return ParseCell(element.Value.Trim());
 
         var obj = new JsonObject();
-        foreach (var attr in element.Attributes())
-            obj["@" + attr.Name.LocalName] = ParseScalar(attr.Value);
+        foreach (var attr in attributes)
+            obj["@" + attr.Name.LocalName] = ParseCell(attr.Value.Trim());
+
+        // Il testo fra gli elementi figli fa parte del documento e va conservato.
+        string text = string.Join(" ", element.Nodes().OfType<XText>()
+            .Select(node => node.Value.Trim()).Where(value => value.Length > 0));
+        if (text.Length > 0) obj["#text"] = ParseCell(text);
 
         foreach (var group in element.Elements().GroupBy(e => e.Name.LocalName))
         {
@@ -274,9 +218,6 @@ public sealed class DataSerializationEngine : IConversionEngine
                 obj[group.Key] = arr;
             }
         }
-
-        if (!element.HasElements && element.HasAttributes && !string.IsNullOrWhiteSpace(element.Value))
-            obj["#text"] = ParseScalar(element.Value);
 
         return obj;
     }
@@ -377,8 +318,9 @@ public sealed class DataSerializationEngine : IConversionEngine
             if (trimmed.StartsWith('[') && trimmed.EndsWith(']'))
             {
                 string secName = trimmed[1..^1].Trim();
-                current = new JsonObject();
-                root[secName] = current;
+                // Una sezione ripetuta prosegue la precedente, senza cancellarla.
+                if (root[secName] is JsonObject existing) current = existing;
+                else root[secName] = current = new JsonObject();
                 continue;
             }
 
@@ -650,10 +592,31 @@ public sealed class DataSerializationEngine : IConversionEngine
         if (v.Equals("null", StringComparison.OrdinalIgnoreCase) || v == "~") return null;
         if (v.Equals("true", StringComparison.OrdinalIgnoreCase)) return JsonValue.Create(true);
         if (v.Equals("false", StringComparison.OrdinalIgnoreCase)) return JsonValue.Create(false);
-        if (IsNumericIdentifier(v)) return JsonValue.Create(v);
-        if (long.TryParse(v, NumberStyles.Integer, CultureInfo.InvariantCulture, out long l)) return JsonValue.Create(l);
-        if (double.TryParse(v, NumberStyles.Float, CultureInfo.InvariantCulture, out double d) && !double.IsNaN(d) && !double.IsInfinity(d)) return JsonValue.Create(d);
-        return JsonValue.Create(v);
+        return ParseNumber(v, allowExponent: true) ?? JsonValue.Create(v);
+    }
+
+    /// <summary>Cella CSV o testo XML: null, ~ e virgolette sono contenuto, non sintassi.</summary>
+    internal static JsonNode? ParseCell(string value)
+    {
+        string v = value.Trim();
+        if (v.Equals("true", StringComparison.OrdinalIgnoreCase)) return JsonValue.Create(true);
+        if (v.Equals("false", StringComparison.OrdinalIgnoreCase)) return JsonValue.Create(false);
+        // Un esponente in una cella è quasi sempre un codice prodotto (12E5).
+        return ParseNumber(v, allowExponent: false) ?? JsonValue.Create(value);
+    }
+
+    /// <summary>Numero JSON con le stesse cifre del testo (1.50 resta 1.50), oppure null se diventerebbe un altro valore.</summary>
+    internal static JsonNode? ParseNumber(string value, bool allowExponent)
+    {
+        if (IsNumericIdentifier(value) && !Regex.IsMatch(value, @"\A-?0(?:\.[0-9]+)?\z")) return null;
+        if (!Regex.IsMatch(value, allowExponent
+                ? @"\A-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?(?:[eE][+-]?[0-9]+)?\z"
+                : @"\A-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?\z"))
+            return null;
+        // Oltre 15 cifre un double perde precisione: i codici lunghi restano testo.
+        if (value.Count(char.IsAsciiDigit) > 15) return null;
+        if (!double.TryParse(value, NumberStyles.Float, CultureInfo.InvariantCulture, out double number) || !double.IsFinite(number)) return null;
+        return JsonNode.Parse(value);
     }
 
     // ── Serializzatore JsonNode -> Output String ──────────────────────────────
@@ -662,7 +625,7 @@ public sealed class DataSerializationEngine : IConversionEngine
     {
         return ext switch
         {
-            "json" => node?.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) ?? "null",
+            "json" => node?.ToJsonString(TextFiles.ReadableJson) ?? "null",
             "jsonl" => ToJsonl(node),
             "csv" => ToDelimited(node, ','),
             "tsv" => ToDelimited(node, '\t'),
@@ -683,11 +646,11 @@ public sealed class DataSerializationEngine : IConversionEngine
             var sb = new StringBuilder();
             foreach (var item in arr)
             {
-                sb.AppendLine(item?.ToJsonString() ?? "null");
+                sb.AppendLine(item?.ToJsonString(TextFiles.ReadableJsonLine) ?? "null");
             }
             return sb.ToString();
         }
-        return (node?.ToJsonString() ?? "null") + Environment.NewLine;
+        return (node?.ToJsonString(TextFiles.ReadableJsonLine) ?? "null") + Environment.NewLine;
     }
 
     private static string ToDelimited(JsonNode? node, char delimiter)
@@ -738,7 +701,7 @@ public sealed class DataSerializationEngine : IConversionEngine
         if (node is null) return "";
         if (node is JsonValue val && val.TryGetValue<string>(out string? text))
             return text;
-        return node.ToJsonString();
+        return node.ToJsonString(TextFiles.ReadableJsonLine);
     }
 
     private static string ToXml(JsonNode? node)
@@ -749,7 +712,7 @@ public sealed class DataSerializationEngine : IConversionEngine
         return doc.ToString();
     }
 
-    private static void PopulateXml(XElement parent, JsonNode? node, string itemName)
+    internal static void PopulateXml(XElement parent, JsonNode? node, string itemName)
     {
         if (node is null) return;
         if (node is JsonValue)
@@ -771,9 +734,13 @@ public sealed class DataSerializationEngine : IConversionEngine
         {
             foreach (var kv in obj)
             {
-                if (kv.Key.StartsWith('@') && kv.Value is JsonValue attrVal)
+                if (kv.Key == "#text" && kv.Value is JsonValue)
                 {
-                    parent.SetAttributeValue(SanitizeXmlName(kv.Key[1..]), attrVal.ToString());
+                    parent.Add(new XText(ScalarString(kv.Value)));
+                }
+                else if (kv.Key.StartsWith('@') && kv.Value is JsonValue attrVal)
+                {
+                    parent.SetAttributeValue(SanitizeXmlName(kv.Key[1..]), ScalarString(attrVal));
                 }
                 else if (kv.Value is JsonArray childArr)
                 {
@@ -789,7 +756,7 @@ public sealed class DataSerializationEngine : IConversionEngine
         }
     }
 
-    private static string SanitizeXmlName(string name)
+    internal static string SanitizeXmlName(string name)
     {
         if (string.IsNullOrWhiteSpace(name)) return "item";
         var sb = new StringBuilder();
@@ -809,11 +776,11 @@ public sealed class DataSerializationEngine : IConversionEngine
         }
         else if (node is JsonObject mapping && mapping.Count > 0)
         {
-            foreach (var (key, value) in mapping) AppendValue(JsonSerializer.Serialize(key) + ":", value);
+            foreach (var (key, value) in mapping) AppendValue(JsonSerializer.Serialize(key, TextFiles.ReadableJsonLine) + ":", value);
         }
         else
         {
-            output.Append(pad).AppendLine(node?.ToJsonString() ?? "null");
+            output.Append(pad).AppendLine(node?.ToJsonString(TextFiles.ReadableJsonLine) ?? "null");
         }
         return output.ToString();
 
@@ -823,16 +790,23 @@ public sealed class DataSerializationEngine : IConversionEngine
             if (value is JsonArray { Count: > 0 } or JsonObject { Count: > 0 })
                 output.AppendLine().Append(ToYaml(value, indent + 1));
             else
-                output.Append(' ').AppendLine(value?.ToJsonString() ?? "null");
+                output.Append(' ').AppendLine(value?.ToJsonString(TextFiles.ReadableJsonLine) ?? "null");
         }
     }
 
     private static string ToIni(JsonNode? node)
     {
         var sb = new StringBuilder();
-        if (node is JsonObject rootObj)
+        var rootObj = AsMapping(node);
+        if (node is JsonArray rows)
         {
-            foreach (var kv in rootObj)
+            // Una tabella diventa una sezione numerata per riga.
+            rootObj = new JsonObject();
+            for (int i = 0; i < rows.Count; i++) rootObj[(i + 1).ToString(CultureInfo.InvariantCulture)] = rows[i]?.DeepClone();
+        }
+        {
+            // Prima le chiavi senza sezione: dopo un'intestazione apparterrebbero a quella sezione.
+            foreach (var kv in rootObj.OrderBy(kv => kv.Value is JsonObject))
             {
                 if (kv.Value is JsonObject subObj)
                 {
@@ -850,12 +824,14 @@ public sealed class DataSerializationEngine : IConversionEngine
         return sb.ToString();
     }
 
+    /// <summary>Elenchi e valori singoli vanno sotto una chiave: INI e TOML hanno sempre una mappa alla radice.</summary>
+    private static JsonObject AsMapping(JsonNode? node) => node as JsonObject ?? new JsonObject { [node is JsonArray ? "items" : "value"] = node?.DeepClone() };
+
     private static string ToToml(JsonNode? node)
     {
-        if (node is not JsonObject mapping)
-            throw new FormatException("Il documento TOML deve avere un oggetto alla radice.");
         var output = new StringBuilder();
-        foreach (var (key, value) in mapping)
+        // TOML non rappresenta i valori null: una chiave assente ha lo stesso significato.
+        foreach (var (key, value) in AsMapping(node).Where(item => item.Value is not null))
             output.Append(FormatTomlKey(key)).Append(" = ").AppendLine(FormatTomlValue(value));
         return output.Length == 0 ? "# Documento TOML vuoto" + Environment.NewLine : output.ToString();
     }
@@ -866,7 +842,7 @@ public sealed class DataSerializationEngine : IConversionEngine
         {
             null => throw new FormatException("TOML non rappresenta i valori null."),
             JsonArray array => "[" + string.Join(", ", array.Select(FormatTomlValue)) + "]",
-            JsonObject mapping => "{ " + string.Join(", ", mapping.Select(item =>
+            JsonObject mapping => "{ " + string.Join(", ", mapping.Where(item => item.Value is not null).Select(item =>
                 $"{FormatTomlKey(item.Key)} = {FormatTomlValue(item.Value)}")) + " }",
             JsonValue scalar when scalar.TryGetValue<string>(out string? text) => QuoteToml(text),
             _ => value.ToJsonString()
@@ -888,6 +864,9 @@ public sealed class DataSerializationEngine : IConversionEngine
         return output.Append('"').ToString();
     }
 
+    private static string MarkdownCell(string text) =>
+        text.Replace("|", "\\|").Replace("\r\n", "<br>").Replace("\n", "<br>").Replace("\r", "<br>");
+
     private static string ToMarkdownTable(JsonNode? node, string title)
     {
         var sb = new StringBuilder();
@@ -897,11 +876,11 @@ public sealed class DataSerializationEngine : IConversionEngine
         if (node is JsonArray arr && arr.Count > 0 && arr.All(x => x is JsonObject))
         {
             var cols = arr.OfType<JsonObject>().SelectMany(o => o.Select(kv => kv.Key)).Distinct().ToList();
-            sb.AppendLine("| " + string.Join(" | ", cols) + " |");
+            sb.AppendLine("| " + string.Join(" | ", cols.Select(MarkdownCell)) + " |");
             sb.AppendLine("| " + string.Join(" | ", cols.Select(_ => "---")) + " |");
             foreach (var row in arr.OfType<JsonObject>())
             {
-                sb.AppendLine("| " + string.Join(" | ", cols.Select(c => ScalarString(row[c]).Replace("|", "\\|"))) + " |");
+                sb.AppendLine("| " + string.Join(" | ", cols.Select(c => MarkdownCell(ScalarString(row[c])))) + " |");
             }
             return sb.ToString();
         }
@@ -912,19 +891,20 @@ public sealed class DataSerializationEngine : IConversionEngine
             sb.AppendLine("|---|---|");
             foreach (var kv in obj)
             {
-                sb.AppendLine($"| {kv.Key} | {ScalarString(kv.Value).Replace("|", "\\|")} |");
+                sb.AppendLine($"| {MarkdownCell(kv.Key)} | {MarkdownCell(ScalarString(kv.Value))} |");
             }
             return sb.ToString();
         }
 
         sb.AppendLine("```");
-        sb.AppendLine(node?.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) ?? "null");
+        sb.AppendLine(node?.ToJsonString(TextFiles.ReadableJson) ?? "null");
         sb.AppendLine("```");
         return sb.ToString();
     }
 
     private static string ToHtmlTable(JsonNode? node, string title)
     {
+        title = System.Net.WebUtility.HtmlEncode(title);
         var sb = new StringBuilder();
         sb.AppendLine("<!DOCTYPE html><html><head><meta charset=\"utf-8\">");
         sb.AppendLine($"<title>{title}</title>");
@@ -956,7 +936,7 @@ public sealed class DataSerializationEngine : IConversionEngine
         }
         else
         {
-            sb.AppendLine($"<pre>{System.Net.WebUtility.HtmlEncode(node?.ToJsonString(new JsonSerializerOptions { WriteIndented = true }) ?? "null")}</pre>");
+            sb.AppendLine($"<pre>{System.Net.WebUtility.HtmlEncode(node?.ToJsonString(TextFiles.ReadableJson) ?? "null")}</pre>");
         }
 
         sb.AppendLine("</body></html>");

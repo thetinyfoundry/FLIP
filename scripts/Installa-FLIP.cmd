@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-echo Avvio installazione FLIP v1.0.1...
+echo Avvio installazione FLIP v1.0.2...
 powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Install.ps1"
 if errorlevel 1 (
   echo.

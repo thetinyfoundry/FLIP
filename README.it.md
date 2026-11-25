@@ -2,7 +2,7 @@
 
 # FLIP
 
-[![Versione](https://img.shields.io/badge/versione-v1.0.1-FF7A18?style=flat-square)](https://github.com/thetinyfoundry/FLIP/releases/tag/v1.0.1)
+[![Versione](https://img.shields.io/badge/versione-v1.0.2-FF7A18?style=flat-square)](https://github.com/thetinyfoundry/FLIP/releases/tag/v1.0.2)
 ![Piattaforma](https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-1A1C23?style=flat-square)
 [![CI](https://img.shields.io/github/actions/workflow/status/thetinyfoundry/FLIP/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/thetinyfoundry/FLIP/actions/workflows/ci.yml)
 [![Download](https://img.shields.io/github/downloads/thetinyfoundry/FLIP/total?style=flat-square&label=download&color=FF7A18)](https://github.com/thetinyfoundry/FLIP/releases)
@@ -13,7 +13,7 @@
 
 ![Ruota di conversione di FLIP](docs/assets/wheel.png)
 
-[Video dimostrativo](docs/assets/flip-demo.mp4) · [Note di rilascio](https://github.com/thetinyfoundry/FLIP/releases/tag/v1.0.1) · [Registro delle modifiche](CHANGELOG.md) · [Guida Windows](docs/WINDOWS-INSTALL.md) · [Privacy](PRIVACY.md)
+[Video dimostrativo](docs/assets/flip-demo.mp4) · [Note di rilascio](https://github.com/thetinyfoundry/FLIP/releases/tag/v1.0.2) · [Registro delle modifiche](CHANGELOG.md) · [Guida Windows](docs/WINDOWS-INSTALL.md) · [Privacy](PRIVACY.md)
 
 ## Installa
 
@@ -26,7 +26,7 @@ Firmato da Microsoft, con .NET, FFmpeg e Whisper inclusi. Si aggiorna dallo Stor
 ### Zip da GitHub
 
 1. Installa il [.NET 10 Windows Desktop Runtime x64](https://dotnet.microsoft.com/download/dotnet/10.0) su Windows 10 o 11 x64.
-2. Scarica [`Flip-1.0.1-win-x64.zip`](https://github.com/thetinyfoundry/FLIP/releases/download/v1.0.1/Flip-1.0.1-win-x64.zip) ed estrai tutto l'archivio.
+2. Scarica [`Flip-1.0.2-win-x64.zip`](https://github.com/thetinyfoundry/FLIP/releases/download/v1.0.2/Flip-1.0.2-win-x64.zip) ed estrai tutto l'archivio.
 3. Chiudi FLIP ed esegui `Installa-FLIP.cmd` dalla cartella estratta. Il programma verifica il pacchetto e lo copia in `%LOCALAPPDATA%\Programs\Flip`.
 
 **Usi già FLIP?** Dalla 0.6.3 aggiorna da **Impostazioni → Guida & Scorciatoie → Aggiornamenti**. FLIP contatta GitHub solo quando premi il pulsante. Con una versione precedente esegui `Installa-FLIP.cmd` dal nuovo zip. Per passare allo Store, esegui prima `Disinstalla-FLIP.cmd` dal nuovo zip. Al primo avvio FLIP Converter riprende le tue impostazioni e riusa i motori e i modelli che hai già. Conserva la cartella `%AppData%\FLIP`.

@@ -13,7 +13,7 @@
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
     <AssemblyName>Flip</AssemblyName>
     <ApplicationIcon>Flip.ico</ApplicationIcon>
-    <Version>1.0.1</Version>
+    <Version>1.0.2</Version>
     <Product>FLIP</Product>
     <PackageLicenseExpression>GPL-3.0-only</PackageLicenseExpression>
     <Copyright>Copyright (C) 2026 The Tiny Foundry / Raffaele Acanfora</Copyright>
@@ -24,6 +24,10 @@
     <PackageReference Include="Microsoft.ML.OnnxRuntime" Version="1.32.0" />
     <PackageReference Include="PDFtoImage" Version="5.4.0" />
     <PackageReference Include="PdfPig" Version="0.1.16" />
+    <!-- Versioni native piu recenti di quelle richieste da PDFtoImage: leggono file non fidati. -->
+    <PackageReference Include="bblanchon.PDFium.Win32" Version="160.0.8165" />
+    <PackageReference Include="SkiaSharp" Version="4.157.0" />
+    <PackageReference Include="SkiaSharp.NativeAssets.Win32" Version="4.157.0" />
   </ItemGroup>
   <ItemGroup>
     <Content Include="Flip.ico" CopyToOutputDirectory="PreserveNewest" />

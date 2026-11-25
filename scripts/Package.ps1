@@ -18,7 +18,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Test InputTests falliti durante il packaging.'
 $licenses = Join-Path $payload 'licenses'
 Copy-Item -LiteralPath (Join-Path $root 'licenses') -Destination $licenses -Recurse
 foreach ($package in @('skiasharp','skiasharp.nativeassets.win32')) {
-    $source = Join-Path $root ('packages/' + $package + '/4.150.1')
+    $source = Join-Path $root ('packages/' + $package + '/4.157.0')
     $dest = Join-Path $licenses $package
     New-Item -ItemType Directory -Path $dest -Force | Out-Null
     Get-ChildItem -LiteralPath $source -File | Where-Object { $_.Name -match 'LICENSE|NOTICE' } | Copy-Item -Destination $dest
@@ -36,10 +36,10 @@ foreach ($package in @('microsoft.ml.onnxruntime','microsoft.ml.onnxruntime.mana
 # Pacchetto licenze ufficiale di PDFium
 $nativeArchive = $PdfiumArchive
 if (!$nativeArchive) {
-    $nativeArchive = Join-Path $OutputRoot 'pdfium-7961-win-x64.tgz'
-    Invoke-WebRequest 'https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7961/pdfium-win-x64.tgz' -OutFile $nativeArchive
+    $nativeArchive = Join-Path $OutputRoot 'pdfium-8165-win-x64.tgz'
+    Invoke-WebRequest 'https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8165/pdfium-win-x64.tgz' -OutFile $nativeArchive
 }
-if ((Get-FileHash $nativeArchive).Hash.ToLowerInvariant() -ne '88276459349b291c41f10422dad0210f007c04d919c8fa56472b6b7c6406adf4') { throw 'Checksum archivio PDFium non valido.' }
+if ((Get-FileHash $nativeArchive).Hash.ToLowerInvariant() -ne 'ca7338ae7779b8b1b82f4580305c4d762d214f8df1d54b47647fe3cc75989ded') { throw 'Checksum archivio PDFium non valido.' }
 $native = Join-Path $OutputRoot 'pdfium-notices'
 New-Item -ItemType Directory -Path $native -Force | Out-Null
 & (Join-Path $env:SystemRoot 'System32\tar.exe') -xzf $nativeArchive -C $native

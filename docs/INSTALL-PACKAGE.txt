@@ -1,6 +1,6 @@
 FLIP for Windows x64
 
-FLIP v1.0.1 is licensed under GNU GPLv3 (GPL-3.0-only).
+FLIP v1.0.2 is licensed under GNU GPLv3 (GPL-3.0-only).
 See payload/LICENSE and the component notices in payload/licenses.
 
 1. Install Microsoft .NET 10 Windows Desktop Runtime x64:

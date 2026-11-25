@@ -2,7 +2,7 @@
 
 # FLIP
 
-[![Version](https://img.shields.io/badge/version-v1.0.1-FF7A18?style=flat-square)](https://github.com/thetinyfoundry/FLIP/releases/tag/v1.0.1)
+[![Version](https://img.shields.io/badge/version-v1.0.2-FF7A18?style=flat-square)](https://github.com/thetinyfoundry/FLIP/releases/tag/v1.0.2)
 ![Platform](https://img.shields.io/badge/Windows-10%20%2F%2011%20x64-1A1C23?style=flat-square)
 [![CI](https://img.shields.io/github/actions/workflow/status/thetinyfoundry/FLIP/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/thetinyfoundry/FLIP/actions/workflows/ci.yml)
 [![Downloads](https://img.shields.io/github/downloads/thetinyfoundry/FLIP/total?style=flat-square&label=downloads&color=FF7A18)](https://github.com/thetinyfoundry/FLIP/releases)
@@ -13,7 +13,7 @@
 
 ![FLIP conversion wheel](docs/assets/wheel.png)
 
-[Demo video](docs/assets/flip-demo.mp4) · [Release notes](https://github.com/thetinyfoundry/FLIP/releases/tag/v1.0.1) · [Changelog](CHANGELOG.md) · [Windows guide](docs/WINDOWS-INSTALL.md) · [Privacy](PRIVACY.md)
+[Demo video](docs/assets/flip-demo.mp4) · [Release notes](https://github.com/thetinyfoundry/FLIP/releases/tag/v1.0.2) · [Changelog](CHANGELOG.md) · [Windows guide](docs/WINDOWS-INSTALL.md) · [Privacy](PRIVACY.md)
 
 ## Install
 
@@ -26,7 +26,7 @@ Signed by Microsoft, with .NET, FFmpeg and Whisper included. Updates from the St
 ### ZIP from GitHub
 
 1. Install the [.NET 10 Windows Desktop Runtime x64](https://dotnet.microsoft.com/download/dotnet/10.0) on Windows 10 or 11 x64.
-2. Download [`Flip-1.0.1-win-x64.zip`](https://github.com/thetinyfoundry/FLIP/releases/download/v1.0.1/Flip-1.0.1-win-x64.zip) and extract the entire archive.
+2. Download [`Flip-1.0.2-win-x64.zip`](https://github.com/thetinyfoundry/FLIP/releases/download/v1.0.2/Flip-1.0.2-win-x64.zip) and extract the entire archive.
 3. Close FLIP and run `Installa-FLIP.cmd` from the extracted folder. The installer verifies the package and copies it into `%LOCALAPPDATA%\Programs\Flip`.
 
 **Already using FLIP?** From 0.6.3 update in **Settings → Guide & Shortcuts → Updates**. FLIP contacts GitHub only when you press the button. From earlier versions run `Installa-FLIP.cmd` from the new ZIP. To move to the Store, run `Disinstalla-FLIP.cmd` from the new ZIP first. FLIP Converter imports your settings on its first start and reuses the engines and models you already have. Keep the `%AppData%\FLIP` folder.

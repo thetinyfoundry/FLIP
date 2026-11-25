@@ -4,6 +4,20 @@ Notable changes to **FLIP**. Versions before 1.0.0 were distributed only on GitH
 
 ---
 
+## [1.0.2] - Unreleased
+
+### Security
+- **Imported settings.** Importing a settings file keeps the engine paths, history and network settings of this PC. Imported watch folders start off, and the Hub says so.
+- **PDF/A.** Removing metadata also removes the author, title and earlier revisions left inside the original PDF. Very large pages use less memory.
+- **Files dragged from the browser.** A public page can no longer make FLIP read services on this PC or the home network. Local pages and intranets still work. Brotli is not used, hostile HTML no longer freezes the wheel, and inline data is always treated as an image.
+- **Network paths.** Dropped or copied network paths are recognized before Windows tries to open them.
+- **Programs.** WinGet runs from its own folder, and FLIP no longer looks for programs in the working folder.
+- **Archives and 3D.** Archives and glTF, GLB or FBX files that declare enormous contents are stopped.
+- **Engines.** Whisper and Pandoc downloads without a published SHA256 are refused. LibreOffice always runs with macros off.
+- **Watch folders.** Symbolic links are ignored.
+- **Installer.** The ZIP installer requires a complete SHA256SUMS.txt, refuses unexpected files and warns when .NET 10 needs a security update.
+- **Components.** PDFium 160.0.8165 and SkiaSharp 4.157.0.
+
 ## [1.0.1] - 2026-11-25
 
 First public 1.0 release. Version 1.0.0 was a private Microsoft Store test.

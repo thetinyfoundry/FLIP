@@ -8,8 +8,8 @@ From v0.6.0, FLIP source code, icon, interface and procedurally generated wheel 
 | PdfPig | 0.1.16 | Apache-2.0, https://github.com/UglyToad/PdfPig |
 | Microsoft.ML.OnnxRuntime | 1.32.0 | MIT, https://www.nuget.org/packages/Microsoft.ML.OnnxRuntime/1.32.0 |
 | IS-Net (`isnet-general-use.onnx`, downloaded on demand) | v0.0.0 | Apache-2.0, https://github.com/danielgatis/rembg |
-| SkiaSharp and native assets | 4.150.1 | MIT and native third-party notices, https://github.com/mono/SkiaSharp |
-| PDFium Windows native binaries | 152.0.7961 | BSD-style and third-party notices, https://github.com/bblanchon/pdfium-binaries |
+| SkiaSharp and native assets | 4.157.0 | MIT and native third-party notices, https://github.com/mono/SkiaSharp |
+| PDFium Windows native binaries | 160.0.8165 | BSD-style and third-party notices, https://github.com/bblanchon/pdfium-binaries |
 | FFmpeg essentials build (bundled only in the Microsoft Store package) | 9.1 | GPL-3.0-or-later. Binary and source information: https://github.com/GyanD/codexffmpeg/releases/tag/9.1 · Sources: https://git.ffmpeg.org/ffmpeg.git and the library list in `licenses/ffmpeg/README.txt` |
 | whisper.cpp (bundled only in the Microsoft Store package) | 1.9.2 | MIT, https://github.com/ggml-org/whisper.cpp/tree/v1.9.2 |
 | Pandoc (optional external executable) | 3.12.1 | GPL-2.0-or-later, https://github.com/jgm/pandoc/tree/3.12.1 |

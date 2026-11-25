@@ -31,7 +31,7 @@ Copy-Item -LiteralPath (Join-Path $root 'src\Store\Assets') -Destination $assets
 Copy-Item -LiteralPath (Join-Path $root 'LICENSE'),(Join-Path $root 'NOTICE'),(Join-Path $root 'THIRD_PARTY_NOTICES.md') -Destination $layout
 $licenses=Join-Path $layout 'licenses'
 Copy-Item -LiteralPath (Join-Path $root 'licenses') -Destination $licenses -Recurse
-foreach($entry in @(@('skiasharp','4.150.1'),@('skiasharp.nativeassets.win32','4.150.1'),@('microsoft.ml.onnxruntime','1.32.0'),@('microsoft.ml.onnxruntime.managed','1.32.0'))){
+foreach($entry in @(@('skiasharp','4.157.0'),@('skiasharp.nativeassets.win32','4.157.0'),@('microsoft.ml.onnxruntime','1.32.0'),@('microsoft.ml.onnxruntime.managed','1.32.0'))){
     $source=Join-Path $root ('packages\'+$entry[0]+'\'+$entry[1])
     $target=Join-Path $licenses $entry[0]
     New-Item -ItemType Directory -Path $target -Force | Out-Null
@@ -40,9 +40,9 @@ foreach($entry in @(@('skiasharp','4.150.1'),@('skiasharp.nativeassets.win32','4
     $notices | Copy-Item -Destination $target
 }
 # Le licenze di PDFium sono le stesse del pacchetto GitHub.
-$archive=Join-Path $OutputRoot 'pdfium-7961-win-x64.tgz'
-if(!(Test-Path -LiteralPath $archive)){Invoke-WebRequest -UseBasicParsing 'https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7961/pdfium-win-x64.tgz' -OutFile $archive}
-if((Get-FileHash -LiteralPath $archive).Hash -ne '88276459349b291c41f10422dad0210f007c04d919c8fa56472b6b7c6406adf4'){throw 'Checksum archivio PDFium non valido.'}
+$archive=Join-Path $OutputRoot 'pdfium-8165-win-x64.tgz'
+if(!(Test-Path -LiteralPath $archive)){Invoke-WebRequest -UseBasicParsing 'https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/8165/pdfium-win-x64.tgz' -OutFile $archive}
+if((Get-FileHash -LiteralPath $archive).Hash -ne 'ca7338ae7779b8b1b82f4580305c4d762d214f8df1d54b47647fe3cc75989ded'){throw 'Checksum archivio PDFium non valido.'}
 $native=Join-Path $OutputRoot 'pdfium-notices'
 New-Item -ItemType Directory -Path $native -Force | Out-Null
 & (Join-Path $env:SystemRoot 'System32\tar.exe') -xzf $archive -C $native

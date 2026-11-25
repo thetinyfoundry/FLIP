@@ -106,11 +106,31 @@ public sealed class SettingsStore
         File.WriteAllText(path, json);
     }
 
-    public void ImportFromFile(string path)
+    /// <summary>
+    /// Importa le preferenze da un file. Ciò che vale solo per questo PC resta com'è: un file ricevuto da altri
+    /// non deve poter scegliere i programmi da avviare, né attivare cartelle monitorate o salvare in rete.
+    /// Restituisce quante cartelle monitorate sono state importate spente.
+    /// </summary>
+    public int ImportFromFile(string path)
     {
         var (imported, fields) = ReadSettings(path);
+        int disabled = 0;
         lock (_lock)
         {
+            imported.CustomEnginePaths = new(_settings.CustomEnginePaths, StringComparer.OrdinalIgnoreCase);
+            imported.RecentConversions = [.. _settings.RecentConversions];
+            imported.WatchFolders = imported.WatchFolders.Where(rule => rule is not null && !Policy.IsNetworkPath(rule.FolderPath)).ToList();
+            foreach (var rule in imported.WatchFolders.Where(rule => rule.Enabled))
+            {
+                if (_settings.WatchFolders.Any(known => known.Enabled && SameRule(known, rule))) continue;
+                rule.Enabled = false;
+                disabled++;
+            }
+            if (Policy.IsNetworkPath(imported.CustomOutputDirectory))
+            {
+                imported.CustomOutputDirectory = _settings.CustomOutputDirectory;
+                imported.OutputDirectoryMode = _settings.OutputDirectoryMode;
+            }
             // Le esportazioni precedenti alla migrazione non contengono queste preferenze.
             if (!fields.Contains(nameof(FlipSettings.SoundEnabled))) imported.SoundEnabled = _settings.SoundEnabled;
             if (!fields.Contains(nameof(FlipSettings.GestureEnabled))) imported.GestureEnabled = _settings.GestureEnabled;
@@ -123,7 +143,14 @@ public sealed class SettingsStore
             _settings = imported;
         }
         SettingsChanged?.Invoke(this, EventArgs.Empty);
+        return disabled;
     }
+
+    private static bool SameRule(WatchFolderRule a, WatchFolderRule b) =>
+        string.Equals(a.FolderPath, b.FolderPath, StringComparison.OrdinalIgnoreCase) &&
+        string.Equals(a.TargetExtension, b.TargetExtension, StringComparison.OrdinalIgnoreCase) &&
+        a.DeleteSourceToRecycleBin == b.DeleteSourceToRecycleBin &&
+        a.IncludeExtensions.SequenceEqual(b.IncludeExtensions, StringComparer.OrdinalIgnoreCase);
 
     /// <summary>Esegue e salva una modifica al modello dell'Hub sotto lock.</summary>
     public void Update(Action<FlipSettings> mutate)

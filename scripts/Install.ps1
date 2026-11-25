@@ -45,9 +45,13 @@ if($Source -eq $Destination -or $Destination.StartsWith($Source+'\',[StringCompa
 
 # Verifica preventiva degli hash SHA256SUMS.txt prima di toccare la cartella di destinazione
 $sumsPath = @((Join-Path $packageRoot 'SHA256SUMS.txt'), (Join-Path $PSScriptRoot 'SHA256SUMS.txt')) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
+if(!$sumsPath -and (Split-Path -Leaf $Source) -eq 'payload'){
+    throw 'Manca SHA256SUMS.txt: estrai di nuovo l''intero archivio ZIP.'
+}
 if($sumsPath){
     $sumsRoot = Split-Path -Parent $sumsPath
     $checked = 0
+    $listed = New-Object 'Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
     foreach($line in Get-Content -LiteralPath $sumsPath -Encoding UTF8){
         if([string]::IsNullOrWhiteSpace($line)){continue}
         if($line -match '^([0-9a-fA-F]{64})\s+\*?(.+)$'){
@@ -65,7 +69,17 @@ if($sumsPath){
             if($actualHash -ne $expectedHash){
                 throw ('Hash SHA256 non corrispondente per ' + $rel + ' (pacchetto corrotto o modificato).')
             }
+            [void]$listed.Add($candidate)
             $checked++
+        }
+        else{
+            throw 'SHA256SUMS.txt contiene una riga non valida (pacchetto corrotto o modificato).'
+        }
+    }
+    if($checked -eq 0){throw 'SHA256SUMS.txt e'' vuoto (pacchetto corrotto o modificato).'}
+    if($Source.StartsWith(($sumsRoot.TrimEnd('\') + '\'), [StringComparison]::OrdinalIgnoreCase)){
+        foreach($file in Get-ChildItem -LiteralPath $Source -File -Recurse -Force){
+            if(!$listed.Contains($file.FullName)){throw ('File non previsto nel pacchetto: ' + $file.FullName.Substring($sumsRoot.Length).TrimStart('\'))}
         }
     }
     Write-Host ("Integrita SHA256SUMS.txt verificata ({0} file)." -f $checked) -ForegroundColor Cyan
@@ -81,6 +95,10 @@ $runtime=@(& dotnet --list-runtimes 2>$null)
 if($LASTEXITCODE -ne 0 -or !($runtime -match '^Microsoft\.WindowsDesktop\.App 10\.')){
     throw 'Installa prima Microsoft .NET 10 Windows Desktop Runtime x64 (https://dotnet.microsoft.com/download/dotnet/10.0).'
 }
+$newest=@($runtime | ForEach-Object { if($_ -match '^Microsoft\.WindowsDesktop\.App (10\.\d+\.\d+) '){[version]$matches[1]} } | Sort-Object)[-1]
+if($newest -and $newest -lt [version]'10.0.15'){
+    Write-Warning ('.NET ' + $newest + ' non ha gli ultimi aggiornamenti di sicurezza: installa la versione piu'' recente da https://dotnet.microsoft.com/download/dotnet/10.0')
+}
 
 $running=@(Get-Process Flip -ErrorAction SilentlyContinue)
 if($running.Count){
@@ -94,6 +112,9 @@ if(Test-Path -LiteralPath $Destination){
     foreach($name in @('Flip.exe','Flip.dll')){
         try{$probe=[IO.File]::Open((Join-Path $Destination $name),[IO.FileMode]::Open,[IO.FileAccess]::ReadWrite,[IO.FileShare]::None);$probe.Dispose()}
         catch{throw 'I file in destinazione risultano in uso. Chiudi FLIP prima di aggiornare.'}
+    }
+    if((Get-Item -LiteralPath $Destination -Force).Attributes -band [IO.FileAttributes]::ReparsePoint){
+        throw 'La cartella di destinazione e'' un collegamento a un''altra cartella.'
     }
     $backup=$Destination+'.backup-'+[Guid]::NewGuid().ToString('N')
     Copy-Item -LiteralPath $Destination -Destination $backup -Recurse

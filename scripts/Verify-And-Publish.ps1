@@ -23,13 +23,10 @@ function Show-FailedChecks([string]$file){
 Push-Location $root
 try{
     Write-Host '== 1/4 Build Release ==' -ForegroundColor Cyan
-    $build=& dotnet build $project -c Release 2>&1
+    $build=& dotnet build $project -c Release -warnaserror 2>&1
+    $exit=$LASTEXITCODE
     $build | Select-Object -Last 6 | ForEach-Object { Write-Host $_ }
-    if($LASTEXITCODE -ne 0){throw 'Build fallita.'}
-    if(!($build -match '\b0 (Warning\(s\)|Avvisi)')){
-        $build | Where-Object { $_ -match 'warning' } | Select-Object -Unique | ForEach-Object { Write-Host $_ -ForegroundColor Yellow }
-        Write-Host 'Avvisi: 0 confermato (IT)' -ForegroundColor Green
-    }
+    if($exit -ne 0){throw 'Build fallita o con avvisi.'}
 
     Write-Host '== 2/4 --test-input ==' -ForegroundColor Cyan
     & dotnet run --project $project -c Release --no-build -- --test-input | Out-Host

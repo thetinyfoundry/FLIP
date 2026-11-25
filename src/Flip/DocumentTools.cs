@@ -128,6 +128,13 @@ internal static class DocumentTools
         File.WriteAllText(file, System.Text.Json.JsonSerializer.Serialize(new Dictionary<string, string> { [key] = Path.GetFileNameWithoutExtension(source) }), new UTF8Encoding(false));
         return ["--metadata-file", file];
     }
+    /// <summary>Profilo LibreOffice temporaneo in cui nessuna macro può partire.</summary>
+    internal static void DisableMacros(string profile)
+    {
+        string config = "<?xml version=\"1.0\"?><oor:items xmlns:oor=\"http://openoffice.org/2001/registry\"><item oor:path=\"/org.openoffice.Office.Common/Security/Scripting\"><prop oor:name=\"MacroSecurityLevel\" oor:op=\"fuse\"><value>3</value></prop></item></oor:items>";
+        Directory.CreateDirectory(Path.Combine(profile, "user"));
+        File.WriteAllText(Path.Combine(profile, "user", "registrymodifications.xcu"), config);
+    }
     static async Task OfficePdf(string input, string staged, string job, CancellationToken token)
     {
         // LibreOffice creates deep paths inside its profile; keep these independent of the source folder depth.
@@ -135,8 +142,7 @@ internal static class DocumentTools
         try
         {
             Directory.CreateDirectory(output);
-            string config = "<?xml version=\"1.0\"?><oor:items xmlns:oor=\"http://openoffice.org/2001/registry\"><item oor:path=\"/org.openoffice.Office.Common/Security/Scripting\"><prop oor:name=\"MacroSecurityLevel\" oor:op=\"fuse\"><value>3</value></prop></item></oor:items>";
-            Directory.CreateDirectory(Path.Combine(profile, "user")); File.WriteAllText(Path.Combine(profile, "user", "registrymodifications.xcu"), config);
+            DisableMacros(profile);
             await Run(Office!, ["-env:UserInstallation=" + new Uri(profile + Path.DirectorySeparatorChar).AbsoluteUri, "--headless", "--nologo", "--nodefault", "--norestore", "--convert-to", "pdf:writer_pdf_Export", "--outdir", output, input], token);
             var result = Path.Combine(output, Path.GetFileNameWithoutExtension(input) + ".pdf");
             if (!File.Exists(result)) throw new IOException("LibreOffice non ha prodotto il PDF.");

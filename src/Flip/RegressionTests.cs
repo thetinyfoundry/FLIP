@@ -58,7 +58,18 @@ internal static class RegressionTests
                 ("store_imports_settings_without_engine_paths", StoreImport),
                 ("store_keeps_github_models", StoreModels),
                 ("ffmpeg_checksum_formats_parsed", FfmpegChecksum),
-                ("ffmpeg_offers_only_writable_audio", FfmpegFormats)
+                ("ffmpeg_offers_only_writable_audio", FfmpegFormats),
+                ("settings_import_keeps_this_pc_paths", ImportKeepsLocalPaths),
+                ("pdfa_without_metadata_drops_author_and_keeps_text", PdfaWithoutMetadata),
+                ("network_paths_recognized_without_opening_them", NetworkPaths),
+                ("browser_redirect_to_this_pc_blocked", BrowserRedirect),
+                ("browser_local_addresses_rules", BrowserAddresses),
+                ("browser_hostile_html_does_not_freeze", BrowserHostileHtml),
+                ("programs_not_searched_in_working_folder", WorkingFolderPrograms),
+                ("archive_bomb_stopped", ArchiveBomb),
+                ("gltf_declared_size_not_trusted", GltfBomb),
+                ("engine_download_requires_checksum", EngineChecksum),
+                ("watch_ignores_links", WatchLinks)
             })
             {
                 string work = Directory.CreateDirectory(Path.Combine(root, name)).FullName;
@@ -596,6 +607,188 @@ internal static class RegressionTests
             OnnxRemoveBgEngine.TestOverrideInstallDirectory = previousFolder;
             WhisperLocator.InvalidateCache();
         }
+    }
+
+    private static bool ImportKeepsLocalPaths(string work)
+    {
+        var store = new SettingsStore(Path.Combine(work, "settings.json"), Path.Combine(work, "legacy.json"));
+        string mine = Path.Combine(work, "mio"), watched = Directory.CreateDirectory(Path.Combine(work, "watch")).FullName;
+        var rule = new WatchFolderRule { FolderPath = watched, TargetExtension = "jpg" };
+        store.Update(s =>
+        {
+            s.CustomEnginePaths["ffmpeg"] = mine;
+            s.CustomOutputDirectory = work;
+            s.WatchFolders.Add(rule.Copy());
+        });
+        string shared = Path.Combine(work, "shared.json");
+        File.WriteAllText(shared, JsonSerializer.Serialize(new
+        {
+            TriggerKey = "F8",
+            OutputDirectoryMode = 1,
+            CustomOutputDirectory = @"\\server\pub",
+            CustomEnginePaths = new Dictionary<string, string> { ["ffmpeg"] = "altro.exe", ["pandoc"] = "altro.exe" },
+            WatchFolders = new[] { rule, new WatchFolderRule { FolderPath = work, TargetExtension = "mp3" }, new WatchFolderRule { FolderPath = "//server/pub", TargetExtension = "mp3" } }
+        }));
+        int disabled = store.ImportFromFile(shared);
+        var saved = store.CreateSnapshot();
+        return disabled == 1 && saved.TriggerKey == "F8" && saved.CustomEnginePaths.Count == 1 && saved.CustomEnginePaths["FFMPEG"] == mine &&
+            saved.CustomOutputDirectory == work && saved.OutputDirectoryMode == OutputDirectoryMode.SameAsSource &&
+            saved.WatchFolders.Count == 2 && saved.WatchFolders[0].Enabled && !saved.WatchFolders[1].Enabled;
+    }
+
+    private static bool PdfaWithoutMetadata(string work)
+    {
+        string source = SamplePdf(work, "a.pdf", "AlfaBeta", 300, 400), output = Path.Combine(work, "a.pdfa.pdf");
+        var context = new ConversionContext
+        {
+            InputFilePath = source, OutputFilePath = output, SourceExtension = "pdf", TargetExtension = "pdfa", Settings = new FlipSettings()
+        };
+        context.CustomParameters["strip_metadata"] = "true";
+        var result = new PdfEngine().ConvertAsync(context).GetAwaiter().GetResult();
+        if (!result.Success) throw new IOException(result.ErrorMessage);
+        string raw = Encoding.Latin1.GetString(File.ReadAllBytes(output));
+        using var pdf = UglyToad.PdfPig.PdfDocument.Open(output);
+        return Encoding.Latin1.GetString(File.ReadAllBytes(source)).Contains("Privat") && !raw.Contains("Privat") &&
+            raw.Contains("pdfaid") && pdf.GetPage(1).Text.Contains("AlfaBeta") && pdf.GetPage(1).Width == 300 && Directory.GetFiles(work).Length == 2;
+    }
+
+    private static bool NetworkPaths(string work) =>
+        new[] { @"\\server\a.png", "//server/a.png", @"\\?\UNC\server\a.png", @"/\server\a.png" }.All(Policy.IsNetworkPath) &&
+        !new[] { work, @"\\?\C:\a.png", "a.png", "", null }.Any(Policy.IsNetworkPath) &&
+        Policy.ValidateFilePaths(["//127.0.0.1/x/a.png"]).Length == 0;
+
+    private static bool BrowserRedirect(string work)
+    {
+        using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        int requests = 0;
+        _ = Task.Run(async () =>
+        {
+            try
+            {
+                while (true)
+                {
+                    using var client = await listener.AcceptTcpClientAsync();
+                    await using var stream = client.GetStream();
+                    byte[] buffer = new byte[4096];
+                    int read = await stream.ReadAsync(buffer);
+                    string path = Encoding.ASCII.GetString(buffer, 0, read).Split(' ')[1];
+                    Interlocked.Increment(ref requests);
+                    string answer = path == "/redirect"
+                        ? "HTTP/1.1 302 Found\r\nLocation: /image.png\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                        : "HTTP/1.1 200 OK\r\nContent-Type: image/png\r\nContent-Length: 4\r\nConnection: close\r\n\r\nciao";
+                    await stream.WriteAsync(Encoding.ASCII.GetBytes(answer));
+                }
+            }
+            catch (Exception ex) when (ex is System.Net.Sockets.SocketException or ObjectDisposedException or IOException or IndexOutOfRangeException) { }
+        });
+        BrowserMaterializedItem Fetch(string? page) => BrowserDropService.MaterializeAsync(
+            new BrowserDropCandidate($"http://127.0.0.1:{port}/redirect", "png", "image.png", false, page), work).GetAwaiter().GetResult();
+        // Da una pagina locale (o senza pagina) funziona, reindirizzamento compreso; da un sito pubblico non parte nemmeno la richiesta.
+        bool local = Fetch("127.0.0.1").Success && Fetch(null).Success;
+        int before = requests;
+        return local && before == 4 && !Fetch("example.com").Success && requests == before;
+    }
+
+    private static bool BrowserAddresses(string work)
+    {
+        static bool Allowed(string ip, string target, string start, string? page) => BrowserDropService.IsAllowedAddress(
+            System.Net.IPAddress.Parse(ip), new Uri(target), new BrowserDropCandidate(start, "png", "a.png", false, page));
+        return Allowed("93.184.216.34", "https://example.com/a", "https://example.com/a", "example.com") &&
+            !Allowed("127.0.0.1", "http://127.0.0.1/", "https://example.com/a", "example.com") &&
+            !Allowed("127.0.0.1", "http://127.0.0.1/", "https://example.com/a", null) &&
+            !Allowed("192.168.1.1", "http://192.168.1.1/", "https://example.com/a", null) &&
+            !Allowed("127.0.0.1", "https://example.com/a", "https://example.com/a", "example.com") &&
+            !Allowed("169.254.169.254", "https://example.com/a", "https://example.com/a", "example.com") &&
+            !Allowed("::ffff:127.0.0.1", "https://example.com/a", "https://example.com/a", null) &&
+            !Allowed("::1", "http://[::1]/", "https://example.com/a", "example.com") &&
+            Allowed("127.0.0.1", "http://localhost:8188/a", "http://localhost:8188/a", "localhost") &&
+            Allowed("192.168.1.10", "http://nas.local/a", "http://nas.local/a", "nas.local") &&
+            Allowed("10.0.0.5", "https://intranet.example.com/a", "https://intranet.example.com/a", "intranet.example.com");
+    }
+
+    private static bool BrowserHostileHtml(string work)
+    {
+        var data = new System.Windows.DataObject();
+        data.SetData(System.Windows.DataFormats.Html, string.Concat(Enumerable.Repeat("<img ", 40000)));
+        var clock = System.Diagnostics.Stopwatch.StartNew();
+        bool found = BrowserDropService.TryInspectBrowserData(data, out _);
+        var document = new System.Windows.DataObject();
+        document.SetData(System.Windows.DataFormats.UnicodeText, "data:image/docx;base64,AAAA");
+        return !found && clock.ElapsedMilliseconds < 3000 &&
+            BrowserDropService.TryInspectBrowserData(document, out var candidate) && candidate.GuessedExtension == "png";
+    }
+
+    private static bool WorkingFolderPrograms(string work)
+    {
+        const string name = "flip-prova-programma";
+        File.Copy(Path.Combine(Environment.SystemDirectory, "hostname.exe"), Path.Combine(work, name + ".exe"));
+        string previous = Environment.CurrentDirectory;
+        Environment.CurrentDirectory = work;
+        try
+        {
+            using var process = System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(name) { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true });
+            process?.WaitForExit(5000);
+            return false;
+        }
+        catch (System.ComponentModel.Win32Exception) { return true; }
+        finally { Environment.CurrentDirectory = previous; }
+    }
+
+    private static bool ArchiveBomb(string work)
+    {
+        var bomb = new ArchiveEngine.Quota(1024, work);
+        try
+        {
+            for (long total = 0; total <= ArchiveEngine.Quota.FreeGrowth; total += 1 << 20) bomb.Write(1 << 20);
+            return false;
+        }
+        catch (IOException) { }
+        var large = new ArchiveEngine.Quota(1L << 30, work);
+        for (int i = 0; i < 4096; i++) large.Write(1 << 20);
+        var many = new ArchiveEngine.Quota(1024, work);
+        for (int i = 0; i < ArchiveEngine.Quota.MaxEntries; i++) many.Entry();
+        try { many.Entry(); return false; }
+        catch (IOException) { return true; }
+    }
+
+    private static bool GltfBomb(string work)
+    {
+        string path = Path.Combine(work, "big.gltf"), output = Path.Combine(work, "big.stl");
+        File.WriteAllText(path, "{\"asset\":{\"version\":\"2.0\"},\"buffers\":[{\"byteLength\":12,\"uri\":\"data:application/octet-stream;base64,AAAAAAAAAAAAAAAA\"}]," +
+            "\"bufferViews\":[{\"buffer\":0,\"byteLength\":12}],\"accessors\":[{\"bufferView\":0,\"componentType\":5126,\"count\":150000000,\"type\":\"VEC3\"}]," +
+            "\"meshes\":[{\"primitives\":[{\"attributes\":{\"POSITION\":0}}]}]}");
+        long before = GC.GetTotalAllocatedBytes();
+        var result = new Mesh3DVectorGeoEngine().ConvertAsync(new ConversionContext
+        {
+            InputFilePath = path, OutputFilePath = output, SourceExtension = "gltf", TargetExtension = "stl", Settings = new FlipSettings()
+        }).GetAwaiter().GetResult();
+        return !result.Success && GC.GetTotalAllocatedBytes() - before < 200L << 20;
+    }
+
+    private static bool EngineChecksum(string work)
+    {
+        const string whisper = "[{\"assets\":[{\"name\":\"whisper-bin-x64.zip\",\"browser_download_url\":\"https://github.com/ggml-org/whisper.cpp/releases/download/b1/whisper-bin-x64.zip\"}]}]";
+        const string pandoc = "{\"assets\":[{\"name\":\"pandoc-9-windows-x86_64.zip\",\"browser_download_url\":\"https://github.com/jgm/pandoc/releases/download/9/pandoc-9-windows-x86_64.zip\"}]}";
+        return WhisperModuleInstaller.SelectRuntimeAsset(whisper) is null && EngineInstaller.SelectPandocWindowsAsset(pandoc) is null;
+    }
+
+    private static bool WatchLinks(string work)
+    {
+        string folder = Directory.CreateDirectory(Path.Combine(work, "in")).FullName, output = Directory.CreateDirectory(Path.Combine(work, "out")).FullName;
+        string secret = SampleImage(work, "secret.png", 8, 8, SKColors.Blue);
+        try { File.CreateSymbolicLink(Path.Combine(work, "link.png"), secret); }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { return true; } // Windows senza permesso di creare collegamenti.
+        var settings = new FlipSettings { OutputDirectoryMode = OutputDirectoryMode.CustomFolder, CustomOutputDirectory = output };
+        settings.WatchFolders.Add(new WatchFolderRule { Enabled = true, FolderPath = folder, TargetExtension = "jpg" });
+        using var service = new WatchFolderService(initialSettings: settings);
+        Thread.Sleep(100);
+        File.CreateSymbolicLink(Path.Combine(folder, "link.png"), secret);
+        File.Copy(secret, Path.Combine(folder, "vero.png"));
+        bool converted = SpinWait.SpinUntil(() => File.Exists(Path.Combine(output, "vero.jpg")), 10000);
+        Thread.Sleep(1500);
+        return converted && !File.Exists(Path.Combine(output, "link.jpg"));
     }
 
     private static bool FfmpegChecksum(string work)

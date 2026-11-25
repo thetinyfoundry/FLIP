@@ -45,6 +45,8 @@ internal static class Program
     {
         try
         {
+            // Windows non deve cercare i programmi nella cartella di lavoro: aprendo FLIP da Esplora file può essere Download.
+            Environment.SetEnvironmentVariable("NoDefaultCurrentDirectoryInExePath", "1");
             int evidence = Array.IndexOf(args, "--evidence"); if (evidence >= 0) Evidence.DirectoryPath = Path.GetFullPath(OptionValue(args, "--evidence"));
             Evidence.Enabled = evidence >= 0 || args.Contains("--test-input") || args.Contains("--test-conversions");
             if (evidence >= 0 || args.Contains("--preview-wheel") || args.Contains("--preview-hub") || args.Contains("--export-sound")) Directory.CreateDirectory(Evidence.DirectoryPath);
@@ -215,7 +217,7 @@ internal static class Program
 
     static int Send(string message)
     {
-        try { using var pipe = new NamedPipeClientStream(".", PipeName, PipeDirection.Out); pipe.Connect(1500); using var writer = new StreamWriter(pipe, new UTF8Encoding(false)) { AutoFlush = true }; writer.WriteLine(message); }
+        try { using var pipe = new NamedPipeClientStream(".", PipeName, PipeDirection.Out, PipeOptions.CurrentUserOnly, System.Security.Principal.TokenImpersonationLevel.Anonymous); pipe.Connect(1500); using var writer = new StreamWriter(pipe, new UTF8Encoding(false)) { AutoFlush = true }; writer.WriteLine(message); }
         catch (TimeoutException) { if (message != "exit") MessageBox.Show(Loc.T("Flip è già in avvio. Attendi un istante e usa l'icona nell'area di notifica.", "FLIP is already starting. Wait a moment and use the system tray icon."), "Flip"); }
         catch (UnauthorizedAccessException ex)
         {
@@ -573,12 +575,28 @@ internal sealed class Host : Window, IDisposable
             {
                 using var pipe = new NamedPipeServerStream(Program.PipeName, PipeDirection.In, 1, PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
                 await pipe.WaitForConnectionAsync(lifetime.Token);
-                using var reader = new StreamReader(pipe, Encoding.UTF8); string? message = await reader.ReadLineAsync(lifetime.Token);
+                using var reader = new StreamReader(pipe, Encoding.UTF8); string? message = await ReadMessageAsync(reader, lifetime.Token);
                 await Dispatcher.InvokeAsync(() => { if (message == "exit") Exit(); else if (message == "sound-test") sound.Play(); else if (message is "settings" or "select") ShowSettings(); else if (message == "clipboard") TriggerClipboardFlip(); else if (message?.StartsWith("trigger:") == true) ApplyShortcut(message[8..]); else if (message?.StartsWith("multi:") == true) ShowPanel(JsonSerializer.Deserialize<string[]>(message[6..]) ?? []); else if (message != null) Open(JsonSerializer.Deserialize<string[]>(message) ?? [], false); });
             }
             catch (OperationCanceledException) { break; }
             catch (Exception ex) { Evidence.Log("ipc.error", ex.Message); if (!lifetime.IsCancellationRequested) await Task.Delay(300, lifetime.Token); }
         }
+    }
+    /// <summary>Una riga, con un limite: 128 percorsi molto lunghi restano ampiamente sotto il tetto.</summary>
+    static async Task<string?> ReadMessageAsync(StreamReader reader, CancellationToken token)
+    {
+        const int limit = 8 * 1024 * 1024;
+        var text = new StringBuilder();
+        char[] buffer = new char[4096];
+        while (text.Length < limit)
+        {
+            int read = await reader.ReadAsync(buffer, token);
+            if (read == 0) return text.Length == 0 ? null : text.ToString();
+            int end = Array.IndexOf(buffer, '\n', 0, read);
+            text.Append(buffer, 0, end < 0 ? read : end);
+            if (end >= 0) return text.ToString().TrimEnd('\r');
+        }
+        throw new IOException("IPC message too long.");
     }
     internal void CancelJob() => job?.Cancel();
     void SavePreferences() { try { preferences.Save(); } catch (Exception ex) { Toast(Loc.F("Impossibile salvare le preferenze: {0}", "Could not save preferences: {0}", ex.Message)); } }

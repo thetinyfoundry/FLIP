@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
@@ -20,7 +21,8 @@ public readonly record struct BrowserDropCandidate(
     string RawUri,
     string GuessedExtension,
     string SuggestedFileName,
-    bool IsDataUri);
+    bool IsDataUri,
+    string? PageHost = null);
 
 /// <summary>
 /// Risultato della materializzazione su disco locale del candidato browser.
@@ -38,18 +40,29 @@ public readonly record struct BrowserMaterializedItem(
 public static class BrowserDropService
 {
     private static readonly Regex ImgRegex = new(
-        @"<img[^>]+?(?<![a-zA-Z0-9_-])src\s*=\s*[""']([^""']+)[""']",
-        RegexOptions.IgnoreCase | RegexOptions.Singleline);
+        @"<img[^<>]+?(?<![a-zA-Z0-9_-])src\s*=\s*[""']([^""']+)[""']",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline, TimeSpan.FromMilliseconds(250));
+
+    private static readonly Regex SourceUrlRegex = new(@"^SourceURL:(https?://[^\r\n]+)",
+        RegexOptions.IgnoreCase | RegexOptions.Multiline | RegexOptions.CultureInvariant, TimeSpan.FromMilliseconds(250));
+
+    private const int MaxRedirects = 5;
+    private const int MaxDataUriCharacters = 64 * 1024 * 1024;
 
     private static readonly HttpClient SharedHttpClient = CreateHttpClient();
+    private static readonly HttpRequestOptionsKey<BrowserDropCandidate> CandidateKey = new("Flip.BrowserDropCandidate");
 
     private static HttpClient CreateHttpClient()
     {
-        var handler = new HttpClientHandler
+        var handler = new SocketsHttpHandler
         {
-            AutomaticDecompression = DecompressionMethods.All,
-            AllowAutoRedirect = true,
-            MaxAutomaticRedirections = 5
+            // Senza Brotli: il suo decoder nei .NET 10 precedenti alla 10.0.14 ha una falla nota (CVE-2026-111497).
+            AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate,
+            // I reindirizzamenti si seguono a mano, per controllare ogni destinazione.
+            AllowAutoRedirect = false,
+            // Una connessione riusata salterebbe il controllo dell'indirizzo.
+            PooledConnectionLifetime = TimeSpan.Zero,
+            ConnectCallback = ConnectAsync
         };
         var client = new HttpClient(handler)
         {
@@ -57,6 +70,90 @@ public static class BrowserDropService
         };
         client.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) FLIP/1.0");
         return client;
+    }
+
+    /// <summary>Si collega solo a indirizzi che la pagina di partenza poteva raggiungere da sola.</summary>
+    private static async ValueTask<Stream> ConnectAsync(SocketsHttpConnectionContext context, CancellationToken ct)
+    {
+        var request = context.InitialRequestMessage;
+        var addresses = await Dns.GetHostAddressesAsync(context.DnsEndPoint.Host, ct).ConfigureAwait(false);
+        // Con un proxy l'indirizzo è quello del proxy scelto dall'utente: non va filtrato.
+        bool direct = request.RequestUri is { } uri && string.Equals(uri.IdnHost.Trim('[', ']'), context.DnsEndPoint.Host.Trim('[', ']'), StringComparison.OrdinalIgnoreCase);
+        if (direct && request.Options.TryGetValue(CandidateKey, out var candidate))
+            addresses = addresses.Where(address => IsAllowedAddress(address, request.RequestUri!, candidate)).ToArray();
+        if (addresses.Length == 0)
+            throw new HttpRequestException(Loc.T("La pagina rimanda a un indirizzo della rete locale: download bloccato.", "The page points to a local network address: download blocked."));
+
+        var socket = new Socket(SocketType.Stream, ProtocolType.Tcp) { NoDelay = true };
+        try
+        {
+            await socket.ConnectAsync(addresses, context.DnsEndPoint.Port, ct).ConfigureAwait(false);
+            return new NetworkStream(socket, ownsSocket: true);
+        }
+        catch
+        {
+            socket.Dispose();
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Un sito pubblico non deve usare FLIP per leggere servizi del PC o della rete di casa. Restano permessi i file trascinati
+    /// da una pagina locale (router, NAS, ComfyUI...) e quelli di una intranet che serve sia la pagina sia il file.
+    /// </summary>
+    internal static bool IsAllowedAddress(IPAddress address, Uri target, BrowserDropCandidate candidate)
+    {
+        if (!IsLocalAddress(address, out bool thisComputer)) return true;
+        if (!Uri.TryCreate(candidate.RawUri, UriKind.Absolute, out var start)) return false;
+        bool fromLocalPage = candidate.PageHost == null || LooksLocal(candidate.PageHost);
+        if (LooksLocal(start.IdnHost) && fromLocalPage && LooksLocal(target.IdnHost)) return true;
+        return !thisComputer && candidate.PageHost != null &&
+            string.Equals(candidate.PageHost, start.IdnHost, StringComparison.OrdinalIgnoreCase) &&
+            string.Equals(target.IdnHost, start.IdnHost, StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static bool LooksLocal(string host)
+    {
+        host = host.Trim('[', ']').TrimEnd('.');
+        if (IPAddress.TryParse(host, out var address)) return IsLocalAddress(address, out _);
+        return !host.Contains('.') || new[] { ".local", ".localhost", ".lan", ".home", ".internal", ".home.arpa" }
+            .Any(suffix => host.EndsWith(suffix, StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static bool IsLocalAddress(IPAddress address, out bool thisComputer)
+    {
+        if (address.IsIPv4MappedToIPv6) address = address.MapToIPv4();
+        byte[] b = address.GetAddressBytes();
+        bool v4 = b.Length == 4;
+        // Anche 169.254.x.x: è l'indirizzo dei servizi interni delle macchine cloud.
+        thisComputer = IPAddress.IsLoopback(address) || address.IsIPv6LinkLocal ||
+            address.Equals(IPAddress.IPv6Any) || (v4 && (b[0] is 0 or 127 || (b[0] == 169 && b[1] == 254)));
+        return thisComputer || address.IsIPv6Multicast || address.IsIPv6SiteLocal || address.IsIPv6UniqueLocal ||
+            (v4 && (b[0] == 10 || (b[0] == 172 && b[1] is >= 16 and <= 31) || (b[0] == 192 && b[1] == 168) || b[0] >= 224));
+    }
+
+    private static async Task<HttpResponseMessage> GetAsync(BrowserDropCandidate candidate, CancellationToken ct)
+    {
+        var uri = new Uri(candidate.RawUri, UriKind.Absolute);
+        for (int redirects = 0; ; redirects++)
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+            request.Options.Set(CandidateKey, candidate);
+            var response = await SharedHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+            if ((int)response.StatusCode is not (301 or 302 or 303 or 307 or 308) || response.Headers.Location is not { } location)
+                return response;
+            response.Dispose();
+            var next = location.IsAbsoluteUri ? location : new Uri(uri, location);
+            if (redirects >= MaxRedirects || next.Scheme is not ("http" or "https") || (uri.Scheme == "https" && next.Scheme == "http"))
+                throw new HttpRequestException(Loc.T("Reindirizzamento non valido: download bloccato.", "Invalid redirect: download blocked."));
+            uri = next;
+        }
+    }
+
+    private static Match SafeMatch(Regex regex, string text)
+    {
+        try { return regex.Match(text); }
+        catch (RegexMatchTimeoutException) { return Match.Empty; }
     }
 
     /// <summary>
@@ -75,7 +172,7 @@ public static class BrowserDropService
         {
             try
             {
-                if (data.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0 && files.Any(File.Exists))
+                if (data.GetData(DataFormats.FileDrop) is string[] files && files.Any(file => !Policy.IsNetworkPath(file) && File.Exists(file)))
                 {
                     return false;
                 }
@@ -90,9 +187,11 @@ public static class BrowserDropService
         string? html = GetStringFromDataObject(data, DataFormats.Html) ?? GetStringFromDataObject(data, "HTML Format");
         if (!string.IsNullOrWhiteSpace(html))
         {
-            var match = ImgRegex.Match(html);
+            var match = SafeMatch(ImgRegex, html);
             if (match.Success)
             {
+                var sourceMatch = SafeMatch(SourceUrlRegex, html);
+                Uri? baseUri = sourceMatch.Success && Uri.TryCreate(sourceMatch.Groups[1].Value.Trim(), UriKind.Absolute, out var page) ? page : null;
                 string src = WebUtility.HtmlDecode(match.Groups[1].Value.Trim());
                 if (!string.IsNullOrWhiteSpace(src))
                 {
@@ -101,18 +200,15 @@ public static class BrowserDropService
                         !src.StartsWith("https://", StringComparison.OrdinalIgnoreCase) &&
                         !src.StartsWith("data:image/", StringComparison.OrdinalIgnoreCase))
                     {
-                        var sourceMatch = Regex.Match(html, @"SourceURL:(https?://[^\r\n]+)", RegexOptions.IgnoreCase);
-                        if (sourceMatch.Success && Uri.TryCreate(sourceMatch.Groups[1].Value.Trim(), UriKind.Absolute, out var baseUri))
+                        if (baseUri != null && Uri.TryCreate(baseUri, src, out var resolvedUri))
                         {
-                            if (Uri.TryCreate(baseUri, src, out var resolvedUri))
-                            {
-                                src = resolvedUri.AbsoluteUri;
-                            }
+                            src = resolvedUri.AbsoluteUri;
                         }
                     }
 
                     if (TryParseCandidate(src, fromImgTag: true, out candidate))
                     {
+                        candidate = candidate with { PageHost = baseUri?.IdnHost };
                         return true;
                     }
                 }
@@ -241,6 +337,10 @@ public static class BrowserDropService
                 {
                     return new BrowserMaterializedItem(false, "", candidate.GuessedExtension, "Data URI non valido: separatore virgola assente.");
                 }
+                if (candidate.RawUri.Length > MaxDataUriCharacters)
+                {
+                    return new BrowserMaterializedItem(false, "", candidate.GuessedExtension, Loc.T("Immagine della pagina troppo grande.", "The page image is too large."));
+                }
 
                 string header = candidate.RawUri[..commaIdx];
                 string payload = candidate.RawUri[(commaIdx + 1)..];
@@ -292,8 +392,7 @@ public static class BrowserDropService
         string effectiveExt = candidate.GuessedExtension;
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Get, candidate.RawUri);
-            using var response = await SharedHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
+            using var response = await GetAsync(candidate, ct).ConfigureAwait(false);
             response.EnsureSuccessStatusCode();
 
             long? totalBytes = response.Content.Headers.ContentLength;
@@ -369,7 +468,7 @@ public static class BrowserDropService
         catch (Exception ex)
         {
             try { if (!string.IsNullOrEmpty(targetFile) && File.Exists(targetFile)) File.Delete(targetFile); } catch { }
-            return new BrowserMaterializedItem(false, targetFile, effectiveExt, ex.Message);
+            return new BrowserMaterializedItem(false, targetFile, effectiveExt, ex is HttpRequestException { InnerException: HttpRequestException inner } ? inner.Message : ex.Message);
         }
     }
 
@@ -399,7 +498,8 @@ public static class BrowserDropService
             "svg+xml" => "svg",
             "x-icon" or "vnd.microsoft.icon" => "ico",
             "x-ms-bmp" => "bmp",
-            _ when !string.IsNullOrEmpty(subtype) => subtype,
+            // Solo immagini: "data:image/docx" non deve arrivare ai motori dei documenti.
+            "png" or "jpg" or "gif" or "webp" or "bmp" or "ico" or "avif" or "heic" or "heif" or "tiff" or "tif" or "svg" or "jxl" => subtype,
             _ => "png"
         };
     }

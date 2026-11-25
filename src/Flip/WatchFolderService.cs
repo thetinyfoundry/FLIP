@@ -132,6 +132,9 @@ public sealed class WatchFolderService : IDisposable
         {
             string normalized = Path.GetFullPath(fullPath);
 
+            // Un collegamento porterebbe a convertire un file fuori dalla cartella scelta dall'utente.
+            if (new FileInfo(normalized).LinkTarget != null) return;
+
             // Anti-loop Check A: file generato da FLIP
             if (IsGeneratedOutput(normalized)) return;
 

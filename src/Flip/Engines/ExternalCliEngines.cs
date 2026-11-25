@@ -206,7 +206,9 @@ public static class CliResolver
         yield return Path.Combine(AppContext.BaseDirectory, "tools", engineId);
         yield return Path.Combine(AppContext.BaseDirectory, "tools");
 
-        for (var project = new DirectoryInfo(AppContext.BaseDirectory); project != null; project = project.Parent)
+        // Solo dalle cartelle di compilazione: l'app installata non cerca motori nelle cartelle superiori.
+        bool development = AppContext.BaseDirectory.Contains(@"\bin\", StringComparison.OrdinalIgnoreCase);
+        for (var project = development ? new DirectoryInfo(AppContext.BaseDirectory) : null; project != null; project = project.Parent)
         {
             if (!File.Exists(Path.Combine(project.FullName, "Flip.csproj"))) continue;
             if (project.Parent?.Parent is { } repo)
@@ -932,6 +934,7 @@ public sealed class LibreOfficeEngine : IConversionEngine
 
             try
             {
+                DocumentTools.DisableMacros(profile);
                 var args = new List<string>
                 {
                     "-env:UserInstallation=" + new Uri(profile + Path.DirectorySeparatorChar).AbsoluteUri,
@@ -2420,6 +2423,8 @@ public static class WhisperModuleInstaller
                     digest.GetString() is { } value && value.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)
                         ? value["sha256:".Length..]
                         : null;
+                // Senza impronta pubblicata il file non si può verificare.
+                if (sha256 == null) continue;
                 return (url, sha256);
             }
         }
@@ -2670,6 +2675,7 @@ public static class EngineInstaller
                 digest.GetString() is { } val && val.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)
                     ? val["sha256:".Length..]
                     : null;
+            if (sha256 == null) continue;
             return (url, sha256);
         }
         return null;
@@ -2846,8 +2852,11 @@ public static class EngineInstaller
         CancellationToken cancellationToken)
     {
         progress?.Report(new(0.08, Loc.F("Avvio WinGet per {0}…", "Launching WinGet for {0}…", packageId)));
-        var startInfo = new ProcessStartInfo("winget")
+        string winget = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Microsoft", "WindowsApps", "winget.exe");
+        if (!File.Exists(winget)) throw new IOException(Loc.T("WinGet non è disponibile su questo PC.", "WinGet is not available on this PC."));
+        var startInfo = new ProcessStartInfo(winget)
         {
+            WorkingDirectory = Environment.SystemDirectory,
             UseShellExecute = false,
             CreateNoWindow = true,
             RedirectStandardInput = true,

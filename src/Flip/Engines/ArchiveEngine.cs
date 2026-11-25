@@ -102,13 +102,44 @@ public sealed class ArchiveEngine : IConversionEngine
     private static string Extension(string declared, string path) =>
         (string.IsNullOrEmpty(declared) ? Path.GetExtension(path) : declared).TrimStart('.').ToLowerInvariant();
 
+    /// <summary>Ferma gli archivi costruiti per riempire il disco: pochi byte che ne diventano moltissimi.</summary>
+    internal sealed class Quota(long sourceBytes, string root)
+    {
+        internal const int MaxEntries = 200_000;
+        internal const long FreeGrowth = 2L << 30;
+        internal const int MaxRatio = 200;
+        internal const long ReservedDiskBytes = 1L << 30;
+
+        private readonly DriveInfo? drive = Path.GetPathRoot(root) is { Length: > 0 } name && !name.StartsWith(@"\\") ? new DriveInfo(name) : null;
+        private long written, nextDiskCheck;
+        private int entries;
+
+        internal void Entry()
+        {
+            if (++entries > MaxEntries)
+                throw new IOException(Loc.F("L'archivio contiene più di {0} elementi.", "The archive contains more than {0} items.", MaxEntries));
+        }
+
+        internal void Write(int bytes)
+        {
+            written += bytes;
+            if (written > FreeGrowth && written / MaxRatio > sourceBytes)
+                throw new IOException(Loc.T("Archivio sospetto: estratto occuperebbe uno spazio enorme rispetto alla sua dimensione.", "Suspicious archive: its contents are enormous compared with its size."));
+            if (written < nextDiskCheck) return;
+            nextDiskCheck = written + (64L << 20);
+            if (drive is { IsReady: true } && drive.AvailableFreeSpace < ReservedDiskBytes)
+                throw new IOException(Loc.T("Spazio su disco insufficiente per estrarre l'archivio.", "Not enough disk space to extract the archive."));
+        }
+    }
+
     private static async Task ExtractAsync(string path, string extension, string root, CancellationToken ct)
     {
+        var quota = new Quota(new FileInfo(path).Length, root);
         if (extension is "7z" or "rar" ||
             (extension == "bz2" && path.EndsWith(".tar.bz2", StringComparison.OrdinalIgnoreCase)) ||
             (extension == "xz" && path.EndsWith(".tar.xz", StringComparison.OrdinalIgnoreCase)))
         {
-            await ExtractWithSystemTarAsync(path, root, ct).ConfigureAwait(false);
+            await ExtractWithSystemTarAsync(path, root, quota, ct).ConfigureAwait(false);
             return;
         }
 
@@ -121,6 +152,7 @@ public sealed class ArchiveEngine : IConversionEngine
                     foreach (var entry in zip.Entries)
                     {
                         ct.ThrowIfCancellationRequested();
+                        quota.Entry();
                         bool directory = entry.FullName.EndsWith('/') || entry.FullName.EndsWith('\\');
                         int unixType = (entry.ExternalAttributes >> 16) & 0xF000;
                         if (unixType is not (0 or 0x4000 or 0x8000) ||
@@ -135,20 +167,20 @@ public sealed class ArchiveEngine : IConversionEngine
                         }
 
                         using var data = entry.Open();
-                        await WriteEntryAsync(root, entry.FullName, data, ct).ConfigureAwait(false);
+                        await WriteEntryAsync(root, entry.FullName, data, quota, ct).ConfigureAwait(false);
                     }
                 }
                 break;
             case "tar":
-                await ExtractTarAsync(source, root, ct).ConfigureAwait(false);
+                await ExtractTarAsync(source, root, quota, ct).ConfigureAwait(false);
                 break;
             case "gz" or "tgz" or "tar.gz":
                 using (var gzip = new GZipStream(source, CompressionMode.Decompress))
                 {
                     if (extension is "tgz" or "tar.gz" || path.EndsWith(".tar.gz", StringComparison.OrdinalIgnoreCase))
-                        await ExtractTarAsync(gzip, root, ct).ConfigureAwait(false);
+                        await ExtractTarAsync(gzip, root, quota, ct).ConfigureAwait(false);
                     else
-                        await WriteEntryAsync(root, Path.GetFileNameWithoutExtension(path), gzip, ct).ConfigureAwait(false);
+                        await WriteEntryAsync(root, Path.GetFileNameWithoutExtension(path), gzip, quota, ct).ConfigureAwait(false);
                 }
                 break;
             default:
@@ -156,18 +188,19 @@ public sealed class ArchiveEngine : IConversionEngine
         }
     }
 
-    private static async Task ExtractTarAsync(Stream source, string root, CancellationToken ct)
+    private static async Task ExtractTarAsync(Stream source, string root, Quota quota, CancellationToken ct)
     {
         using var tar = new TarReader(source, leaveOpen: true);
         while (await tar.GetNextEntryAsync(cancellationToken: ct).ConfigureAwait(false) is { } entry)
         {
+            quota.Entry();
             switch (entry.EntryType)
             {
                 case TarEntryType.Directory:
                     Directory.CreateDirectory(EntryPath(root, entry.Name, directory: true));
                     break;
                 case TarEntryType.RegularFile or TarEntryType.V7RegularFile or TarEntryType.ContiguousFile:
-                    await WriteEntryAsync(root, entry.Name, entry.DataStream ?? Stream.Null, ct).ConfigureAwait(false);
+                    await WriteEntryAsync(root, entry.Name, entry.DataStream ?? Stream.Null, quota, ct).ConfigureAwait(false);
                     break;
                 case TarEntryType.GlobalExtendedAttributes:
                     // Commento generale dell'archivio (lo aggiunge GitHub): non è un file.
@@ -178,12 +211,22 @@ public sealed class ArchiveEngine : IConversionEngine
         }
     }
 
-    private static async Task WriteEntryAsync(string root, string name, Stream data, CancellationToken ct)
+    private static async Task WriteEntryAsync(string root, string name, Stream data, Quota quota, CancellationToken ct)
     {
         string path = EntryPath(root, name, directory: false);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         await using var file = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None, 81920, useAsync: true);
-        await data.CopyToAsync(file, ct).ConfigureAwait(false);
+        byte[] buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(81920);
+        try
+        {
+            int read;
+            while ((read = await data.ReadAsync(buffer, ct).ConfigureAwait(false)) > 0)
+            {
+                quota.Write(read);
+                await file.WriteAsync(buffer.AsMemory(0, read), ct).ConfigureAwait(false);
+            }
+        }
+        finally { System.Buffers.ArrayPool<byte>.Shared.Return(buffer); }
     }
 
     private static string EntryPath(string root, string name, bool directory)
@@ -220,7 +263,7 @@ public sealed class ArchiveEngine : IConversionEngine
              "123456789¹²³".Contains(stem[3]));
     }
 
-    private static async Task ExtractWithSystemTarAsync(string path, string root, CancellationToken ct)
+    private static async Task ExtractWithSystemTarAsync(string path, string root, Quota quota, CancellationToken ct)
     {
         if (!File.Exists(SystemTar))
             throw new NotSupportedException("tar.exe di Windows non è disponibile.");
@@ -240,7 +283,7 @@ public sealed class ArchiveEngine : IConversionEngine
         try
         {
             Stream data = process.StandardOutput.BaseStream;
-            await ExtractTarAsync(data, root, ct).ConfigureAwait(false);
+            await ExtractTarAsync(data, root, quota, ct).ConfigureAwait(false);
             await data.CopyToAsync(Stream.Null, ct).ConfigureAwait(false);
             await process.WaitForExitAsync(ct).ConfigureAwait(false);
             string error = await stderr.ConfigureAwait(false);

@@ -717,6 +717,7 @@ public sealed class Mesh3DVectorGeoEngine : IConversionEngine
             uint jsonType = br.ReadUInt32();
             if (jsonType != 0x4E4F534Au) // "JSON"
                 throw new IOException("GLB non valido: chunk JSON mancante.");
+            if (jsonLen > fs.Length - fs.Position) throw new IOException("GLB non valido: versione o lunghezza errata.");
             byte[] jsonBytes = br.ReadBytes((int)jsonLen);
             jsonText = Encoding.UTF8.GetString(jsonBytes).TrimEnd('\0', ' ');
 
@@ -724,6 +725,7 @@ public sealed class Mesh3DVectorGeoEngine : IConversionEngine
             {
                 uint binLen = br.ReadUInt32();
                 uint binType = br.ReadUInt32();
+                if (binLen > fs.Length - fs.Position) throw new IOException("GLB non valido: versione o lunghezza errata.");
                 if (binType == 0x004E4942u) // "BIN\0"
                     binChunk = br.ReadBytes((int)binLen);
             }
@@ -780,6 +782,7 @@ public sealed class Mesh3DVectorGeoEngine : IConversionEngine
 
             byte[] buf = buffers[bufIdx];
             int start = bvOffset + accOffset;
+            RequireGltfData(buf, start, count, stride, 12);
             var pts = new Vec3[count];
             for (int i = 0; i < count; i++)
             {
@@ -806,6 +809,8 @@ public sealed class Mesh3DVectorGeoEngine : IConversionEngine
 
             byte[] buf = buffers[bufIdx];
             int start = bvOffset + accOffset;
+            int width = compType switch { 5121 => 1, 5123 => 2, _ => 4 };
+            RequireGltfData(buf, start, count, width, width);
             var indices = new int[count];
             for (int i = 0; i < count; i++)
             {
@@ -1400,9 +1405,18 @@ public sealed class Mesh3DVectorGeoEngine : IConversionEngine
         return chain;
     }
 
+    /// <summary>I conteggi scritti nel file non devono far riservare memoria per dati che non ci sono.</summary>
+    private static void RequireGltfData(byte[] buffer, int start, int count, int stride, int size)
+    {
+        if (start < 0 || count < 0 || stride < 0 || (count > 0 && start + (count - 1L) * stride + size > buffer.Length) || (stride == 0 && count > buffer.Length))
+            throw new IOException("GLTF: dati incompleti.");
+    }
+
     private static byte[] DecompressFbxArray(byte[] raw, int expectedBytes)
     {
         if (raw.Length == 0 || expectedBytes <= 0) return [];
+        // DEFLATE non supera 1032:1.
+        if (expectedBytes / 1032 > raw.Length) throw new IOException("FBX: dati incompleti.");
 
         // 1. Salta i 2 byte dell'header zlib (CMF + FLG) e decomprimi con DeflateStream
         if (raw.Length > 2)
@@ -1440,6 +1454,7 @@ public sealed class Mesh3DVectorGeoEngine : IConversionEngine
         length = br.ReadUInt32();
         uint encoding = br.ReadUInt32();
         uint compLen = br.ReadUInt32();
+        if (compLen > br.BaseStream.Length - br.BaseStream.Position) throw new IOException("FBX: dati incompleti.");
         byte[] raw = br.ReadBytes((int)compLen);
         int expectedBytes = checked((int)(length * (uint)elemSize));
         return encoding == 1 ? DecompressFbxArray(raw, expectedBytes) : raw;

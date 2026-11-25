@@ -38,7 +38,7 @@ internal static class ShellIntegration
             using var key = Registry.CurrentUser.CreateSubKey(Key);
             key.SetValue("", Loc.T("Converti con Flip", "Convert with FLIP"));
             key.SetValue("MultiSelectModel", "Single");
-            key.SetValue("Icon", exe + ",0");
+            key.SetValue("Icon", $"\"{exe}\",0");
             using var c = key.CreateSubKey("command"); c.SetValue("", command);
         }
         Evidence.Log(remove ? "shell.remove" : "shell.install", exe);

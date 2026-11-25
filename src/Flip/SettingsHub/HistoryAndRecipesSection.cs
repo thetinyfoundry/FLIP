@@ -300,10 +300,13 @@ public static class HistoryAndRecipesSection
             {
                 try
                 {
-                    SettingsStore.Current.ImportFromFile(dialog.FileName);
+                    int disabled = SettingsStore.Current.ImportFromFile(dialog.FileName);
                     Loc.SetPreference(SettingsStore.Current.CreateSnapshot().Language);
                     SettingsHubWindow.RefreshLanguage();
-                    ShowBackupStatus(Loc.F("✓ Importata · {0}", "✓ Imported · {0}", System.IO.Path.GetFileName(dialog.FileName)), ok: true);
+                    ShowBackupStatus(Loc.F("✓ Importata · {0}", "✓ Imported · {0}", System.IO.Path.GetFileName(dialog.FileName)) +
+                        (disabled > 0
+                            ? Loc.F(" · {0} cartelle monitorate importate spente: controllale e attivale", " · {0} watch folders imported as off: review and turn them on", disabled)
+                            : ""), ok: true);
                 }
                 catch (Exception ex)
                 {

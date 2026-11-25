@@ -164,7 +164,7 @@ public static class ClipboardFlipService
             {
                 if (data.GetData(DataFormats.FileDrop) is string[] paths && paths.Length > 0)
                 {
-                    var existing = paths.Where(File.Exists).Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+                    var existing = paths.Where(path => !Policy.IsNetworkPath(path) && File.Exists(path)).Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
                     if (existing.Count > 0)
                     {
                         payload = new ClipboardMaterializedPayload(

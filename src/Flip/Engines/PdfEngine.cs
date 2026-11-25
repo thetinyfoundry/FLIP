@@ -93,7 +93,22 @@ public sealed class PdfEngine : IConversionEngine
 
             if (dstExt == "pdfa")
             {
-                if (srcExt == "pdf")
+                if (srcExt == "pdf" && stripMetadata)
+                {
+                    // PDF/A aggiunge in coda senza toccare il resto: autore, titolo e versioni precedenti resterebbero nel file.
+                    string cleanPdf = dstPath + ".clean.tmp.pdf";
+                    try
+                    {
+                        PdfPages.Combine([File.ReadAllBytes(srcPath)], cleanPdf, withoutMetadata: true, context.CancellationToken);
+                        ConvertToPdfA2b(cleanPdf, dstPath, stripMetadata);
+                    }
+                    finally
+                    {
+                        try { File.Delete(cleanPdf); }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Evidence.Log("pdfa.cleanup", ex.Message); }
+                    }
+                }
+                else if (srcExt == "pdf")
                 {
                     ConvertToPdfA2b(srcPath, dstPath, stripMetadata);
                 }
@@ -1430,7 +1445,8 @@ public sealed class PdfEngine : IConversionEngine
 
     private static void RebuildAsClassicPdf(byte[] srcBytes, string dstPdfPath)
     {
-        const float renderDpi = 200f;
+        // Le pagine enormi usano una risoluzione minore, per non esaurire la memoria.
+        float renderDpi = Math.Min(200, PdfPages.RenderOptions(srcBytes, longestSide: 0).Dpi);
         using var stream = new FileStream(dstPdfPath, FileMode.Create, FileAccess.Write, FileShare.None);
         using var doc = SKDocument.CreatePdf(stream, EmptyPdfMetadata()) ?? throw new IOException("Encoder PDF non disponibile.");
         foreach (var pageBmp in PDFtoImage.Conversion.ToImages(srcBytes, options: new PDFtoImage.RenderOptions(Dpi: (int)renderDpi, WithAspectRatio: true)))

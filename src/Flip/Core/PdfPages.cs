@@ -63,7 +63,7 @@ internal static class PdfPages
     /// Risoluzione per convertire le pagine in immagini senza deformarle: lato lungo di circa 2400 pixel.
     /// Larghezza e altezza fisse, usate prima, schiacciavano ogni pagina in proporzione 3:4.
     /// </summary>
-    internal static PDFtoImage.RenderOptions RenderOptions(byte[] pdf)
+    internal static PDFtoImage.RenderOptions RenderOptions(byte[] pdf, int longestSide = 2400)
     {
         double longest = 1, largest = 1;
 #pragma warning disable CA1416
@@ -73,7 +73,7 @@ internal static class PdfPages
             largest = Math.Max(largest, (double)size.Width * size.Height);
         }
 #pragma warning restore CA1416
-        double dpi = Math.Clamp(72 * 2400 / longest, 110, 300);
+        double dpi = longestSide <= 0 ? 300 : Math.Clamp(72.0 * longestSide / longest, 110, 300);
         // Un manifesto enorme non deve esaurire la memoria.
         double pixels = largest * dpi * dpi / (72 * 72);
         if (pixels > 60_000_000) dpi *= Math.Sqrt(60_000_000 / pixels);

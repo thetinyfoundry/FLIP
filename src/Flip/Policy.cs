@@ -142,18 +142,29 @@ internal static class Policy
     internal static string[] RawFilePaths(IDataObject data) =>
         data.GetDataPresent(DataFormats.FileDrop, false) && data.GetData(DataFormats.FileDrop, false) is string[] { Length: > 0 and <= 128 } paths ? paths : [];
 
+    /// <summary>Percorso di rete, riconosciuto dal solo testo: basta chiedere a Windows se esiste per farlo collegare al server.</summary>
+    internal static bool IsNetworkPath(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return false;
+        string text = Environment.ExpandEnvironmentVariables(path.Trim().Trim('"')).Replace('/', '\\');
+        if (!text.StartsWith(@"\\")) return false;
+        // \\?\C:\ e \\.\C:\ sono percorsi locali.
+        return !(text.Length > 5 && text[2] is '?' or '.' && text[3] == '\\' && char.IsAsciiLetter(text[4]) && text[5] == ':');
+    }
+
     internal static string[] ValidateFilePaths(string[] paths)
     {
         try
         {
             foreach (var path in paths)
             {
-                if (!Path.IsPathFullyQualified(path) || path.StartsWith(@"\\") || new DriveInfo(Path.GetPathRoot(path)!).DriveType == DriveType.Network || !File.Exists(path)) return [];
+                if (!Path.IsPathFullyQualified(path) || path.Replace('/', '\\').StartsWith(@"\\") || new DriveInfo(Path.GetPathRoot(path)!).DriveType == DriveType.Network || !File.Exists(path)) return [];
                 if ((File.GetAttributes(path) & (FileAttributes.Directory | FileAttributes.Offline | FileAttributes.ReparsePoint)) != 0) return [];
             }
         }
         catch (IOException) { return []; }
         catch (UnauthorizedAccessException) { return []; }
+        catch (ArgumentException) { return []; }
         return paths.Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     }
     internal static DragDropEffects Effect(DragDropEffects allowed, bool valid) => valid && (allowed & DragDropEffects.Copy) != 0 ? DragDropEffects.Copy : DragDropEffects.None;

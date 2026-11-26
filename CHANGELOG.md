@@ -18,6 +18,7 @@ Contributed by [@augustodecans-dev](https://github.com/augustodecans-dev) in [#7
 
 ### Fixed
 - **Transcriptions stuck at 96%.** On some PCs Whisper finished writing the transcript but did not close, and the wheel waited at 96%. FLIP now delivers the transcript when the file is complete and Whisper has been idle for 15 seconds.
+- **Long transcriptions.** Recordings of an hour or more are no longer cut off after 60 minutes of work. Whisper is stopped only if it shows no activity for 10 minutes.
 - **Keys on a wheel opened by holding the mouse button.** Space opens QuickLook, and A, Z and Tab work even while File Explorer keeps the keyboard focus. File Explorer no longer receives those keys.
 
 ### Security

@@ -1378,8 +1378,11 @@ public sealed class LocalAiEngine : IConversionEngine
         string stdout, stderr;
         try
         {
+            // Nessun tetto fisso: 2 ore di audio su un PC lento superano l'ora. Si ferma solo se tace per WhisperIdleSeconds
+            // (whisper-cli stampa segmenti e progresso di continuo mentre lavora).
             (exitCode, stdout, stderr) = await CliResolver.RunProcessAsync(
-                exe, args, Path.GetDirectoryName(exe), outputWatch.Token, timeoutSeconds: 3600, context.Progress).ConfigureAwait(false);
+                exe, args, Path.GetDirectoryName(exe), outputWatch.Token, timeoutSeconds: WhisperIdleSeconds, context.Progress,
+                idleTimeout: true).ConfigureAwait(false);
         }
         catch (OperationCanceledException) when (outputReady && !context.CancellationToken.IsCancellationRequested)
         {
@@ -1406,6 +1409,9 @@ public sealed class LocalAiEngine : IConversionEngine
 
     /// <summary>Secondi di attesa dopo che la trascrizione è stata scritta, prima di chiudere un whisper-cli rimasto appeso.</summary>
     internal const int ExitGraceSeconds = 15;
+
+    /// <summary>Minuti di silenzio (nessuna riga in uscita) dopo cui una trascrizione è considerata bloccata.</summary>
+    internal const int WhisperIdleSeconds = 600;
 
     /// <summary>
     /// True quando il file restituito da <paramref name="findOutput"/> esiste, non è vuoto e la sua dimensione
@@ -1494,7 +1500,8 @@ public sealed class LocalAiEngine : IConversionEngine
         }
 
         var (exitCode, stdout, stderr) = await CliResolver.RunProcessAsync(
-            exe, args, tempDir, context.CancellationToken, timeoutSeconds: 3600, context.Progress).ConfigureAwait(false);
+            exe, args, tempDir, context.CancellationToken, timeoutSeconds: WhisperIdleSeconds, context.Progress,
+            idleTimeout: true).ConfigureAwait(false);
 
         if (exitCode != 0)
         {
@@ -1577,7 +1584,8 @@ internal static class WhisperAudio
             var (exitCode, _, stderr) = await CliResolver.RunProcessAsync(
                 ffmpeg,
                 ["-y", "-i", sourcePath, "-vn", "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", wavPath],
-                Path.GetDirectoryName(wavPath), cancellationToken, timeoutSeconds: 1800).ConfigureAwait(false);
+                // ffmpeg aggiorna di continuo le statistiche su stderr: anche qui conta il silenzio, non la durata.
+                Path.GetDirectoryName(wavPath), cancellationToken, timeoutSeconds: 600, idleTimeout: true).ConfigureAwait(false);
             if (exitCode == 0 && File.Exists(wavPath) && new FileInfo(wavPath).Length > 44) return;
 
             // Un WAV non decodificato da ffmpeg può ancora essere letto dal parser nativo qui sotto.

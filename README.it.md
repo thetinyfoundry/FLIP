@@ -25,10 +25,12 @@ Per disinstallare FLIP, esegui `Disinstalla-FLIP.cmd` dal pacchetto estratto.
 
 ## Novità di AURA Edition
 
-- **Aura ai bordi dello schermo e ruota radiale.** La ruota segue il cursore tra i monitor. Premi **Tab** o usa la rotellina per passare dai formati agli strumenti rapidi. Una selezione mista si può suddividere per tipo di file.
+- **Aura ai bordi dello schermo e ruota radiale.** La ruota segue il cursore tra i monitor. Premi **Tab** o usa la rotellina per passare dai formati agli strumenti rapidi, anche quando la ruota è stata aperta con la pressione prolungata. Una selezione mista si può suddividere per tipo di file.
 - **Anteprima rapida.** Premi **Spazio** durante il trascinamento. Esplora i modelli 3D con vista orbitale e tavola a quattro viste, consulta la palette delle immagini e visualizza testo e forme d'onda.
-- **Strumenti rapidi.** Ritaglia, ruota, ridimensiona, sfoca aree sensibili, unisci PDF, rimuovi sfondi, estrai testo con OCR e raccogli i risultati in un archivio ZIP.
-- **PDF per l'archiviazione e trascrizione senza connessione.** Converti i file compatibili in PDF/A-2b. Con il motore facoltativo Whisper puoi trascrivere audio e video in TXT o SRT sul tuo PC.
+- **Apertura con pressione prolungata.** Attiva l'opzione in *Attivazione & Input* e tieni premuto il click su un file selezionato in Esplora File o sul Desktop (default 3 secondi, regolabile) per aprire la ruota senza premere alcun tasto. Dopo mezzo secondo appare un piccolo anello progressivo; per uscire dalla ruota premi il tasto destro del mouse o Esc.
+- **Strumenti rapidi.** Ritaglia, ruota, ridimensiona, sfoca aree sensibili, unisci PDF, rimuovi sfondi, estrai testo con OCR e raccogli i risultati in ZIP o, se WinRAR è installato, in RAR. Le cartelle selezionate diventano archivi accanto alla cartella originale.
+- **Motori facoltativi.** Se un formato selezionato richiede un motore non installato, FLIP chiede se installarlo prima di avviare la conversione.
+- **PDF per l'archiviazione e trascrizione senza connessione.** Converti i file compatibili in PDF/A-2b. **Unisci PDF** conserva dimensione e orientamento originali di ogni pagina; con **A** puoi scegliere `Originale`, A4 o A3, verticale o orizzontale. Con il motore facoltativo Whisper puoi trascrivere audio e video in TXT o SRT sul tuo PC.
 - **Impostazioni e accessibilità.** Dall'Hub puoi configurare la ruota, le destinazioni, i motori facoltativi, le cartelle monitorate e le ricette. Chi usa un dispositivo Tobii può abilitare la selezione con lo sguardo.
 
 ## Formati e motori

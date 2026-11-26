@@ -981,12 +981,40 @@ public sealed class MergePdfQuickTool : IQuickTool
         return sources.OrderBy(path => Path.GetFileName(path), comparer).ToArray();
     }
 
+    private readonly record struct PageSizePt(float Width, float Height);
+
+    private static readonly PageSizePt A4Portrait = new(595.28f, 841.89f);
+    private static readonly PageSizePt A4Landscape = new(841.89f, 595.28f);
+    private static readonly PageSizePt A3Portrait = new(841.89f, 1190.55f);
+    private static readonly PageSizePt A3Landscape = new(1190.55f, 841.89f);
+
+    private static PageSizePt ParsePageSize(string? value) => value?.ToLowerInvariant() switch
+    {
+        "a4p" => A4Portrait,
+        "a4l" => A4Landscape,
+        "a3p" => A3Portrait,
+        "a3l" => A3Landscape,
+        _ => A4Portrait
+    };
+
+    private static List<PageSizePt> ReadPdfPageSizes(string path)
+    {
+        using var pdf = UglyToad.PdfPig.PdfDocument.Open(path);
+        var sizes = new List<PageSizePt>(pdf.NumberOfPages);
+        foreach (var page in pdf.GetPages())
+            // Page.Width/Height sono già orientati secondo /Rotate e CropBox.
+            sizes.Add(new((float)page.Width, (float)page.Height));
+        return sizes;
+    }
+
     private static void WriteMergedPdf(string outPath, string[] inputs, QuickToolContext context)
     {
         using var stream = new FileStream(outPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
         using var document = SKDocument.CreatePdf(stream) ?? throw new IOException(Loc.T("Encoder PDF non disponibile.", "PDF encoder unavailable."));
 
-        float pageW = 595, pageH = 842, margin = 30;
+        string pageSize = context.Parameters.GetValueOrDefault("page_size", "original");
+        bool preserveOriginal = string.Equals(pageSize, "original", StringComparison.OrdinalIgnoreCase);
+        var forced = preserveOriginal ? A4Portrait : ParsePageSize(pageSize);
 
         for (int i = 0; i < inputs.Length; i++)
         {
@@ -997,15 +1025,23 @@ public sealed class MergePdfQuickTool : IQuickTool
 
             if (ext == "pdf")
             {
-                // Estrai pagine PDF e aggiungile al documento
+                // Ogni pagina PDF mantiene le proprie dimensioni e il proprio orientamento.
                 byte[] pdfBytes = File.ReadAllBytes(path);
-                var images = PDFtoImage.Conversion.ToImages(pdfBytes, options: new PDFtoImage.RenderOptions(Dpi: 144, Width: 1800, Height: 2400, WithAspectRatio: true));
+                var sizes = preserveOriginal ? ReadPdfPageSizes(path) : [];
+                var images = PDFtoImage.Conversion.ToImages(pdfBytes, options: new PDFtoImage.RenderOptions(Dpi: 144));
+                int pageIndex = 0;
                 foreach (var bmp in images)
                 {
                     using (bmp)
                     {
                         context.CancellationToken.ThrowIfCancellationRequested();
-                        DrawImagePage(document, bmp, pageW, pageH, margin);
+                        var size = preserveOriginal
+                            ? (pageIndex < sizes.Count
+                                ? sizes[pageIndex]
+                                : new PageSizePt(bmp.Width * 72f / 144f, bmp.Height * 72f / 144f))
+                            : forced;
+                        pageIndex++;
+                        DrawImagePage(document, bmp, size.Width, size.Height, 0);
                     }
                 }
             }
@@ -1014,12 +1050,14 @@ public sealed class MergePdfQuickTool : IQuickTool
                 byte[] imgBytes = File.ReadAllBytes(path);
                 using var bmp = SKBitmap.Decode(imgBytes)
                     ?? throw new IOException(Loc.F("Immagine non decodificabile: {0}", "Unable to decode image: {0}", path));
-                DrawImagePage(document, bmp, pageW, pageH, margin);
+                var size = preserveOriginal ? A4Portrait : forced;
+                DrawImagePage(document, bmp, size.Width, size.Height, 30);
             }
             else if (ext is "txt" or "md" or "csv")
             {
                 string text = File.ReadAllText(path, Encoding.UTF8);
-                DrawTextPages(document, text, pageW, pageH, margin);
+                var size = preserveOriginal ? A4Portrait : forced;
+                DrawTextPages(document, text, size.Width, size.Height, 30);
             }
 
             else
@@ -1081,6 +1119,70 @@ public sealed class MergePdfQuickTool : IQuickTool
 //  4. PACK ZIP QUICK TOOL
 // ══════════════════════════════════════════════════════════════════════════════
 
+/// <summary>Helper condiviso dagli strumenti di archiviazione (ZIP e RAR).</summary>
+internal static class ArchiveQuickToolSupport
+{
+    internal readonly record struct Entry(string Path, string EntryName);
+
+    /// <summary>Espande le cartelle in file, conservando le sottocartelle nel nome dell'entry.</summary>
+    internal static List<Entry> Expand(QuickToolContext context)
+    {
+        var entries = new List<Entry>();
+        foreach (string input in context.InputFilePaths)
+        {
+            context.CancellationToken.ThrowIfCancellationRequested();
+            if (Directory.Exists(input))
+            {
+                string root = Path.GetFullPath(input);
+                string folder = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
+                foreach (string file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+                    entries.Add(new(file, Path.Combine(folder, Path.GetRelativePath(root, file)).Replace('\\', '/')));
+            }
+            else if (File.Exists(input))
+            {
+                entries.Add(new(input, Path.GetFileName(input)));
+            }
+        }
+        return entries;
+    }
+
+    /// <summary>Per una cartella selezionata l'archivio va accanto alla cartella, non dentro.</summary>
+    internal static string? DestinationDirectoryFor(QuickToolContext context)
+    {
+        foreach (string input in context.InputFilePaths)
+        {
+            try
+            {
+                if (!Directory.Exists(input)) continue;
+                string folder = Path.GetFullPath(input);
+                string? parent = Path.GetDirectoryName(Path.TrimEndingDirectorySeparator(folder));
+                return string.IsNullOrWhiteSpace(parent) ? null : parent;
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+            {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    internal static string ArchiveLabel(IReadOnlyList<string> inputs)
+    {
+        if (inputs.Count == 0) return "archive";
+        string first = inputs[0];
+        try
+        {
+            if (Directory.Exists(first))
+                return Path.GetFileName(Path.TrimEndingDirectorySeparator(Path.GetFullPath(first)));
+            return Path.GetFileNameWithoutExtension(first);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or NotSupportedException)
+        {
+            return "archive";
+        }
+    }
+}
+
 /// <summary>
 /// Comprime tutti i file selezionati in un archivio ZIP pulito.
 /// </summary>
@@ -1103,12 +1205,30 @@ public sealed class PackZipQuickTool : IQuickTool
         if (context.InputFilePaths.Count == 0)
             return Task.FromResult(new QuickToolResult(false, [], Loc.T("Nessun file fornito per la compressione ZIP.", "No files provided for ZIP archive.")));
 
-        var output = new QuickToolOutput(context);
+        QuickToolOutput? output = null;
         try
         {
+            var entries = ArchiveQuickToolSupport.Expand(context);
+            if (entries.Count == 0)
+                return Task.FromResult(new QuickToolResult(false, [], Loc.T("Nessun file trovato da comprimere.", "No files found to compress.")));
+
+            var entryByPath = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var entry in entries)
+                entryByPath[Path.GetFullPath(entry.Path)] = entry.EntryName;
+
+            var expanded = new QuickToolContext
+            {
+                InputFilePaths = entries.Select(e => e.Path).ToArray(),
+                Settings = context.Settings,
+                Parameters = context.Parameters,
+                Progress = context.Progress,
+                CancellationToken = context.CancellationToken
+            };
+            output = new QuickToolOutput(expanded);
+
             string[] inputs = output.Sources.ToArray();
             using var job = output.CreateJob(inputs);
-            string name = $"{Path.GetFileNameWithoutExtension(inputs[0])}_bundle.zip";
+            string name = $"{ArchiveQuickToolSupport.ArchiveLabel(context.InputFilePaths)}_bundle.zip";
             string outPath = job.Stage(name);
             using (var fs = new FileStream(outPath, FileMode.CreateNew, FileAccess.Write, FileShare.None))
             using (var zip = new ZipArchive(fs, ZipArchiveMode.Create))
@@ -1118,7 +1238,7 @@ public sealed class PackZipQuickTool : IQuickTool
                 {
                     context.CancellationToken.ThrowIfCancellationRequested();
                     string path = inputs[i];
-                    string entryName = Path.GetFileName(path);
+                    string entryName = entryByPath.TryGetValue(path, out var mapped) ? mapped : Path.GetFileName(path);
                     string stem = Path.GetFileNameWithoutExtension(entryName);
                     string ext = Path.GetExtension(entryName);
                     for (int suffix = 1; !entryNames.Add(entryName); suffix++)
@@ -1129,12 +1249,87 @@ public sealed class PackZipQuickTool : IQuickTool
                 }
             }
 
-            output.Commit(job, outPath, name);
+            output.Commit(job, outPath, name, destinationDirectory: ArchiveQuickToolSupport.DestinationDirectoryFor(context));
             return Task.FromResult(output.Complete());
         }
         catch (Exception ex)
         {
-            return Task.FromResult(output.Fail(Loc.F("Errore compressione ZIP: {0}", "ZIP compression error: {0}", ex.Message)));
+            var result = output?.Fail(Loc.F("Errore compressione ZIP: {0}", "ZIP compression error: {0}", ex.Message))
+                ?? new QuickToolResult(false, [], Loc.F("Errore compressione ZIP: {0}", "ZIP compression error: {0}", ex.Message));
+            return Task.FromResult(result);
+        }
+    }
+}
+
+/// <summary>
+/// Comprime i file selezionati in RAR usando WinRAR, se installato.
+/// </summary>
+public sealed class PackRarQuickTool : IQuickTool
+{
+    public string Id => "pack_rar";
+    public string DisplayName => "RAR";
+    public string IconGlyph => "\uF012"; // Package / Archive
+    public bool SupportsMultipleFiles => true;
+
+    public bool CanHandle(IReadOnlyList<string> inputExtensions, FlipSettings settings)
+    {
+        if (!settings.EnabledBackSideTools.Contains(Id, StringComparer.OrdinalIgnoreCase)) return false;
+        if (inputExtensions.Count == 0) return false;
+        return CliResolver.Resolve("winrar", settings) != null;
+    }
+
+    public async Task<QuickToolResult> ExecuteAsync(QuickToolContext context)
+    {
+        ArgumentNullException.ThrowIfNull(context);
+        if (context.InputFilePaths.Count == 0)
+            return new QuickToolResult(false, [], Loc.T("Nessun file fornito per la compressione RAR.", "No files provided for RAR archive."));
+
+        QuickToolOutput? output = null;
+        try
+        {
+            var entries = ArchiveQuickToolSupport.Expand(context);
+            if (entries.Count == 0)
+                return new QuickToolResult(false, [], Loc.T("Nessun file trovato da comprimere.", "No files found to compress."));
+
+            string? executable = CliResolver.Resolve("winrar", context.Settings);
+            if (executable == null)
+                throw new IOException(Loc.T("WinRAR non è installato.", "WinRAR is not installed."));
+
+            var expanded = new QuickToolContext
+            {
+                InputFilePaths = entries.Select(e => e.Path).ToArray(),
+                Settings = context.Settings,
+                Parameters = context.Parameters,
+                Progress = context.Progress,
+                CancellationToken = context.CancellationToken
+            };
+            output = new QuickToolOutput(expanded);
+
+            string[] inputs = output.Sources.ToArray();
+            using var job = output.CreateJob(inputs);
+            string name = $"{ArchiveQuickToolSupport.ArchiveLabel(context.InputFilePaths)}_bundle.rar";
+            string outPath = job.Stage(name);
+
+            var args = new List<string> { "a", "-ep1", "-r", "-y", outPath };
+            args.AddRange(context.InputFilePaths.Select(Path.GetFullPath));
+            var result = await CliResolver.RunProcessAsync(executable, args,
+                cancellationToken: context.CancellationToken, progress: context.Progress).ConfigureAwait(false);
+            string detail = string.Join(" ", new[] { result.StdErr, result.StdOut }
+                .Where(s => !string.IsNullOrWhiteSpace(s))).Trim();
+            if (detail.Length > 300) detail = detail[..300];
+            if (result.ExitCode > 1 || !File.Exists(outPath) || new FileInfo(outPath).Length == 0)
+                throw new IOException(string.IsNullOrWhiteSpace(detail)
+                    ? Loc.F("WinRAR ha restituito il codice {0}.", "WinRAR exited with code {0}.", result.ExitCode)
+                    : detail);
+
+            context.Progress?.Report(1);
+            output.Commit(job, outPath, name, destinationDirectory: ArchiveQuickToolSupport.DestinationDirectoryFor(context));
+            return output.Complete();
+        }
+        catch (Exception ex)
+        {
+            return (output?.Fail(Loc.F("Errore compressione RAR: {0}", "RAR compression error: {0}", ex.Message))
+                ?? new QuickToolResult(false, [], Loc.F("Errore compressione RAR: {0}", "RAR compression error: {0}", ex.Message)));
         }
     }
 }
@@ -2407,9 +2602,9 @@ internal sealed class QuickToolOutput(QuickToolContext context)
     internal IReadOnlyList<string> Sources => Batch.Sources;
     internal OutputPathAllocator.Job CreateJob(params string[] inputs) => Batch.CreateJob(inputs);
 
-    internal void Commit(OutputPathAllocator.Job job, string staged, string name, bool allowRecycle = true)
+    internal void Commit(OutputPathAllocator.Job job, string staged, string name, bool allowRecycle = true, string? destinationDirectory = null)
     {
-        var result = job.CommitOutputAndApplyRules([new(staged, name)], context.CancellationToken, allowRecycle);
+        var result = job.CommitOutputAndApplyRules([new(staged, name)], context.CancellationToken, allowRecycle, destinationDirectory);
         outputs.AddRange(result.Outputs.Select(item => item.Path));
         if (result.Warning is not null) warnings.Add(result.Warning);
         if (result.Error is not null) throw new IOException(result.Error);

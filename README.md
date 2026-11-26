@@ -25,10 +25,12 @@ To uninstall, run `Disinstalla-FLIP.cmd` from the extracted package.
 
 ## What's in AURA Edition
 
-- **Screen-edge aura and radial wheel.** The wheel follows the cursor across displays. Press **Tab** or scroll to flip between conversion formats and quick tools. Mixed selections can be grouped by file type.
+- **Screen-edge aura and radial wheel.** The wheel follows the cursor across displays. Press **Tab** or scroll to flip between conversion formats and quick tools, including when the wheel was opened by holding the mouse button. Mixed selections can be grouped by file type.
 - **QuickLook.** Press **Space** while dragging to preview a file. Explore 3D models with Orbit and a four-view blueprint, inspect images and their color palettes, or preview text and audio waveforms.
-- **Quick tools.** Crop, rotate, resize, blur sensitive regions, merge PDFs, remove image backgrounds, extract text with OCR, and bundle outputs in a ZIP.
-- **Archival PDF and offline transcription.** Convert supported files to PDF/A-2b. With the optional Whisper engine, transcribe audio or video to TXT or SRT locally.
+- **Hold-to-open.** Enable it under *Activation & Input* and hold the mouse button on a selected file in File Explorer or on the Desktop (3 seconds by default, adjustable) to open the wheel without pressing any key. A small progress ring appears after half a second; press the right mouse button or Esc to close the wheel.
+- **Quick tools.** Crop, rotate, resize, blur sensitive regions, merge PDFs, remove image backgrounds, extract text with OCR, and bundle outputs in ZIP or, when WinRAR is installed, RAR. Selected folders are archived next to the original folder.
+- **Optional engines.** If a selected format needs an engine that is not installed, FLIP asks whether to install it before starting the conversion.
+- **Archival PDF and offline transcription.** Convert supported files to PDF/A-2b. **Merge PDF** preserves each source page's original size and orientation; press **A** to choose `Original`, A4 or A3, portrait or landscape. With the optional Whisper engine, transcribe audio or video to TXT or SRT locally.
 - **Settings and accessibility.** Use the Settings Hub to configure the wheel, output folders, optional engines, watch folders, and recipes. Tobii eye-tracker users can enable dwell selection.
 
 ## Formats and engines

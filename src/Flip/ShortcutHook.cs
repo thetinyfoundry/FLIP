@@ -55,6 +55,41 @@ internal sealed class ShortcutOrderGate
     internal void Reset() { held = mouseDown = opened = false; }
 }
 
+/// <summary>
+/// Rileva la pressione prolungata del pulsante del mouse su un file, senza spostamento.
+/// La logica è pura (nessun timer, nessuna I/O) così è verificabile nei test.
+/// </summary>
+internal sealed class HoldToOpenGate
+{
+    const int MoveTolerance = 8;
+    readonly int thresholdMs;
+    long startedTick;
+    int originX, originY;
+    bool armed;
+
+    internal HoldToOpenGate(int thresholdMs) => this.thresholdMs = Math.Clamp(thresholdMs, 1000, 8000);
+
+    internal void MouseDown(int x, int y, long now)
+    {
+        armed = true;
+        startedTick = now;
+        originX = x;
+        originY = y;
+    }
+
+    internal bool IsArmed => armed;
+    internal void MouseUp() => armed = false;
+    internal void Cancel() => armed = false;
+
+    internal void Move(int x, int y)
+    {
+        if (armed && (Math.Abs((long)x - originX) >= MoveTolerance || Math.Abs((long)y - originY) >= MoveTolerance))
+            armed = false;
+    }
+
+    internal bool IsDue(long now) => armed && now - startedTick >= thresholdMs;
+}
+
 internal sealed class ShortcutHook : IDisposable
 {
     [StructLayout(LayoutKind.Sequential)]

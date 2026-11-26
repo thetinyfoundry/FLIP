@@ -82,6 +82,46 @@ public static class RoutePlanner
     private const int MaxRouteHops = 3;
 
     /// <summary>
+    /// Trova un motore esterno installabile che sbloccherebbe il formato selezionato.
+    /// Il motore deve essere assente ma in grado di contribuire a un percorso valido.
+    /// </summary>
+    internal static string? FindMissingInstallableEngine(
+        IReadOnlyList<string> sourceExtensions,
+        string targetExtension,
+        FlipSettings? settings,
+        IReadOnlyCollection<string> installableEngineIds)
+    {
+        var snapshot = CaptureSettings(settings);
+        string target = NormalizeExtension(targetExtension);
+        if (target.Length == 0 || installableEngineIds.Count == 0) return null;
+
+        var candidates = _engines.Values
+            .Where(engine => engine.IsExternal &&
+                             !engine.IsAvailable(snapshot) &&
+                             installableEngineIds.Contains(engine.Id, StringComparer.OrdinalIgnoreCase))
+            .OrderBy(engine => engine.Id, StringComparer.Ordinal)
+            .ToArray();
+
+        bool ReachesTarget(params IConversionEngine[] forced)
+        {
+            var graph = BuildGraph(snapshot, forced.Select(engine => engine.Id).ToArray());
+            return sourceExtensions
+                .Select(NormalizeExtension)
+                .Where(source => source.Length > 0 && source != target)
+                .Any(source => FindRoutes(source, graph, MaxRouteHops).ContainsKey(target));
+        }
+
+        // Prova prima un solo motore, poi le coppie: alcune conversioni richiedono due motori opzionali.
+        foreach (var engine in candidates)
+            if (ReachesTarget(engine)) return engine.Id;
+        foreach (var first in candidates)
+            foreach (var second in candidates)
+                if (!ReferenceEquals(first, second) && ReachesTarget(first, second))
+                    return first.Id;
+        return null;
+    }
+
+    /// <summary>
     /// Trova il percorso ammissibile meno costoso entro il limite di salti.
     /// </summary>
     public static bool TryPlanRoute(
@@ -332,13 +372,15 @@ public static class RoutePlanner
         return bestRoutes;
     }
 
-    private static Dictionary<string, List<PlannedHop>> BuildGraph(FlipSettings settings)
+    private static Dictionary<string, List<PlannedHop>> BuildGraph(
+        FlipSettings settings, IReadOnlyCollection<string>? forcedAvailableEngineIds = null)
     {
         var graph = new Dictionary<string, List<PlannedHop>>(StringComparer.Ordinal);
         var priorityOrder = settings.EnginePriorityOrder;
         foreach (var engine in _engines.Values.OrderBy(engine => engine.Id, StringComparer.Ordinal))
         {
-            if (!engine.IsAvailable(settings))
+            if (!engine.IsAvailable(settings) &&
+                forcedAvailableEngineIds?.Contains(engine.Id, StringComparer.OrdinalIgnoreCase) != true)
                 continue;
 
             int priorityBonus = GetEnginePriorityBonus(engine.Id, priorityOrder);

@@ -180,9 +180,9 @@ public sealed class FlipSettings
     {
         get => _isSnapshot ? [.. field] : field;
         set => Set(ref field, value ?? []);
-    } = ["crop", "rotate", "merge_pdf", "pack_zip", "target_size", "remove_bg", "ocr", "palette", "clean_meta", "waveform", "turntable_3d"];
+    } = ["crop", "rotate", "merge_pdf", "pack_zip", "pack_rar", "target_size", "remove_bg", "ocr", "palette", "clean_meta", "waveform", "turntable_3d"];
 
-    internal const int CurrentBackSideToolsRevision = 1;
+    internal const int CurrentBackSideToolsRevision = 2;
 
     /// <summary>Revisione dell'elenco strumenti del retro: i nuovi strumenti vengono aggiunti
     /// una sola volta alle installazioni esistenti, senza riattivare quelli disattivati dall'utente.</summary>
@@ -200,6 +200,20 @@ public sealed class FlipSettings
 
     /// <summary>Abilita il gesto di apertura della ruota.</summary>
     public bool GestureEnabled { get; set => Set(ref field, value); } = true;
+
+    /// <summary>
+    /// Apre la ruota tenendo premuto il pulsante del mouse su un file selezionato
+    /// in Esplora File o sul Desktop, senza premere alcun tasto.
+    /// Richiede il gesto di apertura attivo.
+    /// </summary>
+    public bool HoldToOpenEnabled { get; set => Set(ref field, value); } = false;
+
+    /// <summary>Durata della pressione prima dell'apertura della ruota, in millisecondi (1000 - 8000).</summary>
+    public int HoldToOpenMilliseconds
+    {
+        get => field;
+        set => Set(ref field, Math.Clamp(value, 1000, 8000));
+    } = 3000;
 
     /// <summary>Lingua dell'interfaccia ("auto", "it", "en").</summary>
     public string Language { get; set => Set(ref field, Loc.NormalizePreference(value)); } = Loc.Auto;

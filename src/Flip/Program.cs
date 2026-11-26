@@ -253,6 +253,33 @@ internal sealed class Host : Window, IDisposable
     static readonly HashSet<string> InstallableEngineIds = new(StringComparer.OrdinalIgnoreCase)
         { "ffmpeg", "pandoc", "libreoffice", "calibre", "whisper" };
     bool HoldListeningWanted => raw && settingsStore.Settings.GestureEnabled && settingsStore.Settings.HoldToOpenEnabled;
+    /// <summary>L'ascolto del mouse per la pressione prolungata serve solo con Esplora File o il Desktop in primo piano.</summary>
+    bool HoldListeningNeeded => HoldListeningWanted && ShortcutHook.IsExplorerForeground();
+    nint foregroundHook;
+    Native.WinEventProc? foregroundChanged;
+
+    /// <summary>Accende o spegne l'ascolto per la pressione prolungata; a riposo non lo spegne mai durante un gesto.</summary>
+    void SyncHoldListening()
+    {
+        if (disposed || exiting) return;
+        if (HoldListeningNeeded) SetMouseListening(true);
+        else if (wheel == null && !shortcutOrder.Held && !holdTimer.IsEnabled) SetMouseListening(false);
+    }
+
+    /// <summary>
+    /// Cambio di finestra in primo piano. Se il click che ha portato Esplora File in primo piano è ancora premuto,
+    /// la pressione prolungata parte da lì: l'ascolto è stato acceso un istante dopo il suo mouse-down.
+    /// </summary>
+    void OnForegroundChanged()
+    {
+        bool wasListening = mouseListening;
+        SyncHoldListening();
+        if (!wasListening && mouseListening && Native.IsPrimaryMousePressed() && !holdTimer.IsEnabled)
+        {
+            Native.GetCursorPos(out var cursor);
+            ArmHoldToOpen(cursor.X, cursor.Y);
+        }
+    }
     readonly AppPreferences preferences = AppPreferences.Load();
     readonly WheelSound sound;
     readonly DispatcherTimer release = new() { Interval = TimeSpan.FromMilliseconds(500) };
@@ -263,6 +290,7 @@ internal sealed class Host : Window, IDisposable
     int holdDurationMs = 3000;
     bool holdRingShown;
     Wheel? holdOpenedWheel;
+    Task<bool?>? holdTargetCheck;
     CancellationTokenSource? engineInstall;
     long dragOpenedTick;
     long dragReleasedTick;
@@ -375,10 +403,12 @@ internal sealed class Host : Window, IDisposable
             long elapsed = Environment.TickCount64 - holdStartedTick;
             if (!holdRingShown && elapsed >= 500)
             {
-                // Niente anello su scrollbar, barra del titolo o aree vuote: serve una selezione in primo piano.
-                if (GazeOrbWindow.CaptureSelectedFiles(allowClipboardFallback: false, allowFolders: true, foregroundOnly: true).Length == 0)
+                // Niente anello su scrollbar, barra del titolo o aree vuote: la pressione deve essere su un file
+                // (se UI Automation non ha risposto si decide con la sola selezione) e serve una selezione in primo piano.
+                if (!HoldIsOnShellItem() ||
+                    GazeOrbWindow.CaptureSelectedFiles(allowClipboardFallback: false, allowFolders: true, foregroundOnly: true).Length == 0)
                 {
-                    CancelHoldToOpen("no-selection");
+                    CancelHoldToOpen("not-on-selected-item");
                     return;
                 }
                 HoldProgressWindow.Begin();
@@ -467,9 +497,8 @@ internal sealed class Host : Window, IDisposable
                 if (wheel?.IsDragMode == true) wheel.Dismiss("gesture-disabled");
             }
             if (!HoldListeningWanted) CancelHoldToOpen("settings-changed");
-            if (HoldListeningWanted) SetMouseListening(true);
             // Spegne l'ascolto solo a riposo: non durante un gesto da tastiera né con una ruota aperta.
-            else if (wheel == null && !shortcutOrder.Held) SetMouseListening(false);
+            SyncHoldListening();
             SyncGazeAccessibility();
         }
         finally { syncingTray = false; }
@@ -529,7 +558,10 @@ internal sealed class Host : Window, IDisposable
         FirstRunWelcomeWindow.TrayNotifier = Toast;
         hwnd = new WindowInteropHelper(this).Handle; source = HwndSource.FromHwnd(hwnd); source.AddHook(Messages);
         if (preferences.GestureEnabled) RegisterRaw();
-        if (raw && settingsStore.CreateSnapshot().HoldToOpenEnabled) SetMouseListening(true);
+        // Segue la finestra in primo piano: l'ascolto per la pressione prolungata resta acceso solo su Esplora File/Desktop.
+        foregroundChanged = (_, _, _, _, _, _, _) => OnForegroundChanged();
+        foregroundHook = Native.SetWinEventHook(Native.EventSystemForeground, Native.EventSystemForeground, 0, foregroundChanged, 0, 0, 0);
+        SyncHoldListening();
         settingsStore.SettingsChanged += OnSettingsChanged;
         Loc.LanguageChanged += OnLanguageChanged;
         SyncGazeAccessibility();
@@ -683,7 +715,7 @@ internal sealed class Host : Window, IDisposable
         if (resetInputState)
         {
             shortcutOrder.Reset();
-            if (!HoldListeningWanted)
+            if (!HoldListeningNeeded)
                 SetMouseListening(false);
         }
         if (allowCommit && current.IsVisible)
@@ -757,7 +789,7 @@ internal sealed class Host : Window, IDisposable
             onWheelClosed?.Invoke();
             if (!ReferenceEquals(wheel, createdWheel)) return;
             wheel = null; holdOpenedWheel = null; release.Stop(); watchdog.Stop(); dragReleasedTick = 0; shortcutOrder.Reset();
-            if (!HoldListeningWanted)
+            if (!HoldListeningNeeded)
                 SetMouseListening(false);
             gazeOrb?.SetSuspended(busy);
             UpdateScreenEdgeAura();
@@ -1504,7 +1536,7 @@ internal sealed class Host : Window, IDisposable
                         Dispatcher.BeginInvoke(DispatcherPriority.Normal, () => TriggerClipboardFlip());
                     },
                     canClipboardFlip: () => raw && !busy && !exiting && !settingsOpen && !Native.IsDragButtonHeld);
-                if (settingsStore.CreateSnapshot().HoldToOpenEnabled) SetMouseListening(true);
+                SyncHoldListening();
                 Evidence.Log("shortcut.hook.registered", new { triggerName, scope = "Drag anywhere or Explorer/Desktop" });
             }
             catch (Exception ex) { RemoveRaw(); gestureItem.Checked = false; Toast(ex.Message); return; }
@@ -1530,6 +1562,8 @@ internal sealed class Host : Window, IDisposable
         holdGate = new HoldToOpenGate(ms);
         holdStartedTick = Environment.TickCount64;
         holdGate.MouseDown(x, y, holdStartedTick);
+        // In background: la pressione è su un file? (UI Automation può impiegare qualche millisecondo)
+        holdTargetCheck = Task.Run(() => ShellHitTest.IsItemAt(x, y));
         holdRingShown = false;
         holdTimer.Stop();
         holdTimer.Start();
@@ -1546,9 +1580,12 @@ internal sealed class Host : Window, IDisposable
         Evidence.Log("hold.cancel", new { reason });
     }
 
+    /// <summary>False solo se UI Automation ha risposto che sotto il cursore non c'è un file.</summary>
+    bool HoldIsOnShellItem() => holdTargetCheck is not { IsCompletedSuccessfully: true, Result: false };
+
     void ActivateHoldToOpen()
     {
-        if (!HoldToOpenEligible()) return;
+        if (!HoldToOpenEligible() || !HoldIsOnShellItem()) return;
         var files = GazeOrbWindow.CaptureSelectedFiles(allowClipboardFallback: false, allowFolders: true, foregroundOnly: true);
         if (files.Length == 0) return;
         Evidence.Log("hold.activate", new { count = files.Length, elapsedMs = Environment.TickCount64 - holdStartedTick });
@@ -1566,7 +1603,8 @@ internal sealed class Host : Window, IDisposable
         SetMouseListening(true);
         Evidence.Log("wheel.shortcut", new { wheelShortcut.Name, held });
         shortcutHook?.ReserveRepeatsForGesture();
-        var initialSelection = GazeOrbWindow.CaptureSelectedFiles(allowClipboardFallback: false);
+        // Anche le cartelle: trascinate sulla ruota diventano archivi ZIP/RAR.
+        var initialSelection = GazeOrbWindow.CaptureSelectedFiles(allowClipboardFallback: false, allowFolders: true);
         Open(initialSelection, true);
     }
     void ShortcutKeyChanged(bool down)
@@ -1575,7 +1613,7 @@ internal sealed class Host : Window, IDisposable
         if (!down)
         {
             shortcutOrder.KeyUp();
-            if (wheel == null && !HoldListeningWanted)
+            if (wheel == null && !HoldListeningNeeded)
                 SetMouseListening(false);
             return;
         }
@@ -1620,7 +1658,7 @@ internal sealed class Host : Window, IDisposable
                     {
                         CancelHoldToOpen("escape");
                         shortcutOrder.Reset();
-                        if (wheel == null && !HoldListeningWanted)
+                        if (wheel == null && !HoldListeningNeeded)
                             SetMouseListening(false);
                         Dispatcher.BeginInvoke(() => wheel?.Dismiss("escape"));
                     }
@@ -1665,7 +1703,7 @@ internal sealed class Host : Window, IDisposable
                     CancelHoldToOpen("mouse-up");
                     shortcutOrder.MouseUp();
                     if (wheel?.IsDragMode == true) { release.Stop(); release.Start(); }
-                    else if (!shortcutOrder.Held && !HoldListeningWanted)
+                    else if (!shortcutOrder.Held && !HoldListeningNeeded)
                         SetMouseListening(false);
                 }
                 else
@@ -1686,6 +1724,7 @@ internal sealed class Host : Window, IDisposable
     public void Dispose()
     {
         if (disposed) return; disposed = true; lifetime.Cancel(); job?.Cancel(); release.Stop(); watchdog.Stop(); CancelHoldToOpen("dispose"); HoldProgressWindow.End(); RemoveRaw();
+        if (foregroundHook != 0) { Native.UnhookWinEvent(foregroundHook); foregroundHook = 0; }
         watchFolderService?.Dispose(); watchFolderService = null;
         settingsStore.SettingsChanged -= Program.SyncDragButtonPreference;
         settingsStore.SettingsChanged -= OnSettingsChanged;

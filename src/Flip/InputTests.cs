@@ -309,6 +309,12 @@ internal static class InputTests
             string? videoReason = Wheel.ToolUnavailableReason("target_size", ["clip.mp4"], new FlipSettings());
             string? imageReason = Wheel.ToolUnavailableReason("target_size", ["foto.png"], new FlipSettings());
             checks["target_size_video_needs_ffmpeg"] = videoReason != null && imageReason == null;
+            // Onda sonora senza FFmpeg: visibile e sbiadita con il motivo (il WAV invece funziona sempre).
+            var wave = (WaveformQuickTool)RoutePlanner.FindQuickTool("waveform")!;
+            checks["waveform_dimmed_without_ffmpeg"] =
+                !wave.CanHandle(["mp3"], new FlipSettings()) && wave.SupportsWithoutEngine(["mp3"], new FlipSettings()) &&
+                Wheel.ToolUnavailableReason("waveform", ["voce.mp3"], new FlipSettings()) != null &&
+                Wheel.ToolUnavailableReason("waveform", ["voce.wav"], new FlipSettings()) == null;
         }
         finally { CliResolver.SuppressAutoDiscoveryForTest = ffmpegSuppress; }
 
@@ -480,6 +486,11 @@ internal static class InputTests
             checks["folder_selection_rejects_drive_root"] = Policy.ValidateSelection([Path.GetPathRoot(root)!]).Length == 0;
             checks["folder_selection_rejects_network"] = Policy.ValidateSelection([@"\\flip-test-server\share\Cartella"]).Length == 0;
             checks["folder_selection_accepts_local_folder"] = Policy.ValidateSelection([folder]).SequenceEqual([folder]);
+            // Trascinamento: una cartella locale passa (archivi), una di rete no, i soli file restano come prima.
+            checks["folder_drag_accepted_network_refused"] =
+                Policy.ValidateDropPaths([folder]).SequenceEqual([folder]) &&
+                Policy.ValidateDropPaths([@"\\flip-test-server\share\Cartella"]).Length == 0 &&
+                Policy.ValidateDropPaths([Path.Combine(folder, "a.txt")]).SequenceEqual([Path.Combine(folder, "a.txt")]);
 
             // Un nome duplicato riceve il suffisso restando nella propria sottocartella.
             // Due cartelle omonime da percorsi diversi producono la stessa entry "Cartella/sub/b.txt".
@@ -499,6 +510,22 @@ internal static class InputTests
                 keepsSubfolder = names.Contains("Cartella/sub/b.txt") && names.Contains("Cartella/sub/b_1.txt");
             }
             checks["zip_entries_keep_subfolders"] = keepsSubfolder;
+
+            // Le sottocartelle vuote restano nell'archivio.
+            Directory.CreateDirectory(Path.Combine(folder, "vuota", "dentro"));
+            var withEmpty = new PackZipQuickTool().ExecuteAsync(new QuickToolContext
+            {
+                InputFilePaths = [folder],
+                Settings = new FlipSettings { OutputDirectoryMode = OutputDirectoryMode.SameAsSource, ConflictPolicy = ConflictPolicy.AutoNumber }
+            }).GetAwaiter().GetResult();
+            bool keepsEmpty = false;
+            if (withEmpty.Success && withEmpty.OutputFilePaths.Count == 1)
+            {
+                using var archive = System.IO.Compression.ZipFile.OpenRead(withEmpty.OutputFilePaths[0]);
+                var names = archive.Entries.Select(e => e.FullName.Replace('\\', '/')).ToArray();
+                keepsEmpty = names.Contains("Cartella/vuota/dentro/") && names.Contains("Cartella/a.txt");
+            }
+            checks["zip_keeps_empty_subfolders"] = keepsEmpty;
         }
         catch (Exception ex)
         {

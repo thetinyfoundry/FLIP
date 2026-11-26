@@ -1,4 +1,4 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using Flip.Core;
@@ -42,7 +42,7 @@ public static class RoutePlanner
     private static readonly ConcurrentDictionary<string, IQuickTool> _quickTools =
         new(StringComparer.OrdinalIgnoreCase);
 
-    // â”€â”€ Registrazione â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Registrazione ────────────────────────────────────────────────────────
 
     public static void RegisterEngine(IConversionEngine engine)
     {
@@ -56,7 +56,7 @@ public static class RoutePlanner
         _quickTools[tool.Id] = tool;
     }
 
-    /// <summary>Restituisce un Quick Tool registrato per Id, indipendentemente dalla sua visibilitÃ  sul retro della ruota.</summary>
+    /// <summary>Restituisce un Quick Tool registrato per Id, indipendentemente dalla sua visibilità sul retro della ruota.</summary>
     public static IQuickTool? FindQuickTool(string id) =>
         _quickTools.TryGetValue(id, out var tool) ? tool : null;
 
@@ -355,7 +355,7 @@ public static class RoutePlanner
             (_, FormatCategory.TextAndMarkup) => ["txt", "md", "html", "pdf", "docx", "odt", "rtf", "pdfa", "json", "csv", "epub", "rst", "adoc"],
             ("rtf", _) => ["pdf", "docx", "txt", "md", "html", "odt", "pdfa"],
             (_, FormatCategory.DocumentAndEmail) => ["pdf", "txt", "md", "html", "odt", "rtf", "docx", "pdfa", "epub", "png", "jpg", "webp", "bmp", "gif", "tiff", "ico"],
-            // Il PDF Ã¨ la richiesta piÃ¹ comune per un foglio: non deve finire dentro "+ EXTRA".
+            // Il PDF è la richiesta più comune per un foglio: non deve finire dentro "+ EXTRA".
             ("csv" or "tsv", _) =>
                 ["xlsx", "pdf", "json", "csv", "tsv", "xml", "yaml", "html", "md", "ods", "toml", "ini"],
             (_, FormatCategory.Spreadsheet) =>
@@ -486,7 +486,7 @@ public static class RoutePlanner
                 // Prefer LibreOffice over simplified built-in / Pandoc converters for Office document layout fidelity.
                 if (IsOfficeDocumentToPdf(edge.SourceExtension, edge.TargetExtension) && engine.Id == "pdf_builtin")
                     cost += 20;
-                // LibreOffice conserva grafici e stampa dei fogli; una tabella CSV Ã¨ piÃ¹ fedele con il lettore interno.
+                // LibreOffice conserva grafici e stampa dei fogli; una tabella CSV è più fedele con il lettore interno.
                 if (edge.TargetExtension is "pdf" or "pdfa" &&
                     (engine.Id == "pdf_builtin" ? edge.SourceExtension is "xlsx" or "xlsm" or "xltx" or "xls" or "ods"
                         : engine.Id == "libreoffice" && edge.SourceExtension == "csv"))
@@ -562,7 +562,7 @@ public static class RoutePlanner
         if (IsDocxToPdf(sourceExtension, targetExtension))
             return hops.Count == 1 && hops[0].Engine.Id is "libreoffice" or "pdf_builtin";
 
-        // This Word export reconstructs editable text from the PDF, then saves a real Word 97â€“2003 file.
+        // This Word export reconstructs editable text from the PDF, then saves a real Word 97–2003 file.
         if (targetExtension == "doc")
             return sourceExtension == "pdf" && hops.Count == 2 &&
                 hops[0].Edge.TargetExtension == "docx" && hops[0].Engine.Id == "pdf_builtin" &&
@@ -694,7 +694,7 @@ public static class RoutePlanner
             FormatCategory.Vector or FormatCategory.Cad or FormatCategory.Model3D or FormatCategory.RasterAndRaw;
     }
 
-    // â”€â”€ Esecuzione Pipeline Multi-Hop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Esecuzione Pipeline Multi-Hop ────────────────────────────────────────
 
     public sealed record BatchConversionResult(string SourcePath, string TargetExtension, EngineExecutionResult Result);
 
@@ -863,7 +863,7 @@ public static class RoutePlanner
         if (IsDocxToPdf(route.SourceExtension, route.TargetExtension) &&
             route.Hops[0].Engine.Id == "libreoffice" && RequestsMetadataRemoval(parameters))
             throw new IOException(Loc.T(
-                "La conversione DOCX â†’ PDF con impaginazione non supporta la rimozione dei metadati. Disattiva la rimozione nel preset PDF per continuare.",
+                "La conversione DOCX → PDF con impaginazione non supporta la rimozione dei metadati. Disattiva la rimozione nel preset PDF per continuare.",
                 "Layout-preserving DOCX to PDF conversion does not support metadata removal. Turn off metadata removal in the PDF preset to continue."));
 
         IReadOnlyList<string> inputs = [source];
@@ -1093,7 +1093,7 @@ public static class RoutePlanner
         }
     }
 
-    // â”€â”€ Helper Interni â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Helper Interni ───────────────────────────────────────────────────────
 
     private static int GetEnginePriorityBonus(string engineId, List<string> priorityOrder)
     {
@@ -1135,8 +1135,8 @@ public static class RoutePlanner
     public sealed record FileExtensionGroup(string Extension, string Label, string[] Files);
 
     /// <summary>
-    /// Raggruppa un elenco di file per estensione normalizzata (ordinati per numerositÃ  decrescente)
-    /// cosÃ¬ sia la Ruota sia l'Hub possono recuperare batch misti senza bloccare l'utente.
+    /// Raggruppa un elenco di file per estensione normalizzata (ordinati per numerosità decrescente)
+    /// così sia la Ruota sia l'Hub possono recuperare batch misti senza bloccare l'utente.
     /// </summary>
     public static IReadOnlyList<FileExtensionGroup> GroupFilesByExtension(IEnumerable<string> filePaths)
     {

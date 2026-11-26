@@ -90,6 +90,43 @@ internal sealed class HoldToOpenGate
     internal bool IsDue(long now) => armed && now - startedTick >= thresholdMs;
 }
 
+/// <summary>
+/// Cosa c'è sotto il cursore in Esplora File o sul Desktop, via UI Automation: la pressione prolungata
+/// deve partire solo da un file o una cartella (elemento della vista), mai da scrollbar, barre o aree vuote.
+/// </summary>
+internal static class ShellHitTest
+{
+    /// <summary>
+    /// True se in (x, y), coordinate fisiche dello schermo, c'è un elemento della vista file (ListItem/DataItem)
+    /// o un suo figlio. Null se UI Automation non risponde: chi chiama non deve bloccare il gesto.
+    /// </summary>
+    internal static bool? IsItemAt(int x, int y)
+    {
+        try
+        {
+            var element = System.Windows.Automation.AutomationElement.FromPoint(new System.Windows.Point(x, y));
+            for (int depth = 0; element != null && depth < 4; depth++)
+            {
+                var type = element.Current.ControlType;
+                if (type == System.Windows.Automation.ControlType.ListItem || type == System.Windows.Automation.ControlType.DataItem)
+                    return true;
+                if (type == System.Windows.Automation.ControlType.ScrollBar || type == System.Windows.Automation.ControlType.Thumb ||
+                    type == System.Windows.Automation.ControlType.List || type == System.Windows.Automation.ControlType.Tree ||
+                    type == System.Windows.Automation.ControlType.TitleBar || type == System.Windows.Automation.ControlType.ToolBar ||
+                    type == System.Windows.Automation.ControlType.Header || type == System.Windows.Automation.ControlType.Pane)
+                    return false;
+                element = System.Windows.Automation.TreeWalker.ControlViewWalker.GetParent(element);
+            }
+            return false;
+        }
+        catch (Exception ex) when (ex is System.Windows.Automation.ElementNotAvailableException or InvalidOperationException
+                                       or System.Runtime.InteropServices.COMException or ArgumentException)
+        {
+            return null;
+        }
+    }
+}
+
 internal sealed class ShortcutHook : IDisposable
 {
     [StructLayout(LayoutKind.Sequential)]

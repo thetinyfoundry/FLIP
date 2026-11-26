@@ -283,7 +283,18 @@ internal sealed class Wheel : Window
                     CliResolver.Resolve("ffmpeg", settings) == null)
                     return Loc.T("Per comprimere video serve FFmpeg installato o configurato.", "FFmpeg must be installed or configured for video compression.");
                 return null;
-            // Onda sonora e OCR non arrivano qui senza FFmpeg/Tesseract: li esclude già CanHandle.
+            case "waveform":
+                if (files.Any(path => !System.IO.Path.GetExtension(path).Equals(".wav", StringComparison.OrdinalIgnoreCase)) &&
+                    CliResolver.Resolve("ffmpeg", settings) == null)
+                    return Loc.T("Per l'onda sonora da formati compressi serve FFmpeg: installalo da Hub › Motori & GPU.",
+                        "Waveforms from compressed audio need FFmpeg: install it from Hub › Engines & GPU.");
+                return null;
+            case "ocr":
+                if (files.Any(path => !System.IO.Path.GetExtension(path).Equals(".pdf", StringComparison.OrdinalIgnoreCase)) &&
+                    (RoutePlanner.FindQuickTool("ocr") as OcrQuickTool)?.FindTesseract(settings) == null)
+                    return Loc.T("Per l'OCR sulle immagini serve Tesseract con la lingua: installalo da Hub › Motori & GPU.",
+                        "Image OCR needs Tesseract with language data: install it from Hub › Engines & GPU.");
+                return null;
             case "remove_bg":
                 return OnnxRemoveBgEngine.IsModelInstalled(settings) ? null : OnnxRemoveBgEngine.MissingModelMessage;
             default:
@@ -761,7 +772,8 @@ internal sealed class Wheel : Window
     {
         allPayloadFiles = incoming;
         activeMixedGroupExt = null;
-        mixedGroups = RoutePlanner.GroupFilesByExtension(incoming);
+        // Con una cartella si offrono solo gli archivi: niente suddivisione per tipo di file.
+        mixedGroups = ContainsDirectory(incoming) ? [] : RoutePlanner.GroupFilesByExtension(incoming);
         ApplyPayloadSubset(incoming);
     }
 
@@ -910,7 +922,19 @@ internal sealed class Wheel : Window
                 // Le cartelle rispettano gli strumenti scelti dall'utente: se ZIP è disattivato resta solo RAR.
                 var lookupSettings = settings;
                 var size = readSize ? imageSizes.GetOrAdd(payload[0], static path => new(() => ReadOrientedSize(path))).Value : null;
-                var found = OrderToolsForWheel(RoutePlanner.GetAvailableQuickTools(extensions, lookupSettings), ordered);
+                // Onda sonora e OCR senza il loro motore: restano visibili, sbiaditi, con il motivo al clic.
+                var available = RoutePlanner.GetAvailableQuickTools(extensions, lookupSettings).ToList();
+                foreach (var dimmed in new IQuickTool?[] { RoutePlanner.FindQuickTool("waveform"), RoutePlanner.FindQuickTool("ocr") })
+                {
+                    bool supported = dimmed switch
+                    {
+                        WaveformQuickTool wave => wave.SupportsWithoutEngine(extensions, lookupSettings),
+                        OcrQuickTool ocr => ocr.SupportsWithoutEngine(extensions, lookupSettings),
+                        _ => false
+                    };
+                    if (supported && !available.Any(tool => tool.Id == dimmed!.Id)) available.Add(dimmed!);
+                }
+                var found = OrderToolsForWheel(available, ordered);
                 if (hasFolder) found = found.Where(t => t.Id is "pack_zip" or "pack_rar").ToArray();
                 var reasons = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var tool in found)
@@ -2275,7 +2299,7 @@ internal sealed class Wheel : Window
             if (previousDragPaths is null || !rawPaths.AsSpan().SequenceEqual(previousDragPaths))
             {
                 previousDragPaths = null;
-                validatedDragFiles = Policy.ValidateFilePaths(rawPaths);
+                validatedDragFiles = Policy.ValidateDropPaths(rawPaths);
                 previousDragPaths = rawPaths.ToArray();
             }
             var incoming = validatedDragFiles;
@@ -2329,7 +2353,7 @@ internal sealed class Wheel : Window
         try
         {
             var hit = Hit(e.GetPosition(canvas));
-            var incoming = Policy.ReadFiles(e.Data);
+            var incoming = Policy.ValidateDropPaths(Policy.RawFilePaths(e.Data));
             bool isBrowserDrop = false;
             if (incoming.Length == 0 && browserCandidate is { } bc)
             {

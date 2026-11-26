@@ -1205,6 +1205,33 @@ internal static class ArchiveQuickToolSupport
         return entries;
     }
 
+    /// <summary>
+    /// Sottocartelle davvero vuote sul disco (nessun file né cartella dentro), come nomi di entry con "/" finale:
+    /// l'archivio conserva la struttura completa. Solo cartelle vuote, così WinRAR non può aggiungere
+    /// file che <see cref="Expand"/> ha saltato (collegamenti, file offline o cloud).
+    /// </summary>
+    internal static List<string> EmptyDirectories(QuickToolContext context, IReadOnlyList<Entry> entries)
+    {
+        var empty = new List<string>();
+        foreach (string input in Policy.ValidateSelection([.. context.InputFilePaths]).Where(Directory.Exists))
+        {
+            string folder = Path.GetFileName(input);
+            foreach (string directory in Directory.EnumerateDirectories(input, "*", FolderEnumeration))
+            {
+                context.CancellationToken.ThrowIfCancellationRequested();
+                bool isEmpty;
+                try { isEmpty = !Directory.EnumerateFileSystemEntries(directory).Any(); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { continue; }
+                if (!isEmpty) continue;
+                if (entries.Count + empty.Count >= MaxFolderFiles)
+                    throw new IOException(Loc.F("La cartella contiene più di {0} elementi: comprimila con un archiviatore dedicato.",
+                        "The folder contains more than {0} items: use a dedicated archiver.", MaxFolderFiles));
+                empty.Add(Path.Combine(folder, Path.GetRelativePath(input, directory)).Replace('\\', '/') + "/");
+            }
+        }
+        return empty;
+    }
+
     /// <summary>Per una cartella selezionata l'archivio va accanto alla cartella, non dentro.</summary>
     internal static string? DestinationDirectoryFor(QuickToolContext context)
     {
@@ -1268,6 +1295,9 @@ public sealed class PackZipQuickTool : IQuickTool
         try
         {
             var entries = ArchiveQuickToolSupport.Expand(context);
+            var emptyDirectories = ArchiveQuickToolSupport.HasFolder(context)
+                ? ArchiveQuickToolSupport.EmptyDirectories(context, entries)
+                : [];
             if (entries.Count == 0)
                 return Task.FromResult(new QuickToolResult(false, [], Loc.T("Nessun file trovato da comprimere.", "No files found to compress.")));
 
@@ -1309,6 +1339,8 @@ public sealed class PackZipQuickTool : IQuickTool
                     zip.CreateEntryFromFile(path, entryName, CompressionLevel.Optimal);
                     context.Progress?.Report((double)(i + 1) / inputs.Length);
                 }
+                foreach (string directory in emptyDirectories)
+                    if (entryNames.Add(directory)) zip.CreateEntry(directory);
             }
 
             // Archiviare una cartella non cestina mai i file che contiene, anche con "sostituisci l'originale".
@@ -1382,7 +1414,13 @@ public sealed class PackRarQuickTool : IQuickTool
                 throw new IOException(Loc.T("Per RAR seleziona elementi della stessa cartella.", "For RAR, select items from the same folder."));
 
             string listPath = Path.Combine(Path.GetDirectoryName(outPath)!, "flip-rar-list.txt");
-            File.WriteAllLines(listPath, entries.Select(entry => entry.EntryName.Replace('/', '\\')), new UnicodeEncoding(false, true));
+            // Le cartelle vuote vanno in elenco senza "\" finale: WinRAR le aggiunge come cartelle (sono vuote, nessun file in più).
+            var emptyDirectories = ArchiveQuickToolSupport.HasFolder(context)
+                ? ArchiveQuickToolSupport.EmptyDirectories(context, entries)
+                : [];
+            File.WriteAllLines(listPath, entries.Select(entry => entry.EntryName.Replace('/', '\\'))
+                .Concat(emptyDirectories.Select(directory => directory.TrimEnd('/').Replace('/', '\\'))),
+                new UnicodeEncoding(false, true));
             bool gui = Path.GetFileName(executable).Equals("WinRAR.exe", StringComparison.OrdinalIgnoreCase);
             var args = new List<string> { "a", "-y", "-scul" };
             // WinRAR.exe è un programma con finestra: in background, senza finestre di errore modali.
@@ -1651,6 +1689,11 @@ public sealed class OcrQuickTool : IQuickTool
         return extensions.All(IsPdf) || FindTesseract(settings) != null;
     }
 
+    /// <summary>Come <see cref="CanHandle"/> ma senza richiedere Tesseract: la ruota mostra lo strumento sbiadito e spiega perché.</summary>
+    internal bool SupportsWithoutEngine(IReadOnlyList<string> inputExtensions, FlipSettings settings) =>
+        settings.EnabledBackSideTools.Contains(Id, StringComparer.OrdinalIgnoreCase) && inputExtensions.Count > 0 &&
+        inputExtensions.Select(e => e.TrimStart('.')).All(e => IsPdf(e) || RasterExtensions.Contains(e));
+
     public async Task<QuickToolResult> ExecuteAsync(QuickToolContext context)
     {
         ArgumentNullException.ThrowIfNull(context);
@@ -1707,7 +1750,7 @@ public sealed class OcrQuickTool : IQuickTool
         return text.ToString().Trim();
     }
 
-    private (string Path, string Language)? FindTesseract(FlipSettings settings)
+    internal (string Path, string Language)? FindTesseract(FlipSettings settings)
     {
         string? executable = CliResolver.Resolve("tesseract", settings);
         if (executable == null) return null;
@@ -2122,6 +2165,11 @@ public sealed class WaveformQuickTool : IQuickTool
         if (!exts.All(SupportedExts.Contains)) return false;
         return exts.All(e => e == "wav") || CliResolver.Resolve("ffmpeg", settings) != null;
     }
+
+    /// <summary>Come <see cref="CanHandle"/> ma senza richiedere FFmpeg: la ruota mostra lo strumento sbiadito e spiega perché.</summary>
+    internal bool SupportsWithoutEngine(IReadOnlyList<string> inputExtensions, FlipSettings settings) =>
+        settings.EnabledBackSideTools.Contains(Id, StringComparer.OrdinalIgnoreCase) && inputExtensions.Count > 0 &&
+        inputExtensions.Select(e => e.TrimStart('.').ToLowerInvariant()).All(SupportedExts.Contains);
 
     public async Task<QuickToolResult> ExecuteAsync(QuickToolContext context)
     {

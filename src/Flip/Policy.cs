@@ -201,5 +201,22 @@ internal static class Policy
             .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     }
 
+    /// <summary>
+    /// Percorsi trascinati sulla ruota: solo file come sempre, oppure una selezione con cartelle (archivi ZIP/RAR)
+    /// validata da <see cref="ValidateSelection"/>. La presenza di una cartella si controlla solo su percorsi
+    /// locali, così un percorso di rete non viene mai contattato.
+    /// </summary>
+    internal static string[] ValidateDropPaths(string[] paths)
+    {
+        bool hasFolder;
+        try
+        {
+            hasFolder = paths.Any(path => Path.IsPathFullyQualified(path) && !IsNetworkPath(path) &&
+                new DriveInfo(Path.GetPathRoot(path)!).DriveType != DriveType.Network && Directory.Exists(path));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { return []; }
+        return hasFolder ? ValidateSelection(paths) : ValidateFilePaths(paths);
+    }
+
     internal static DragDropEffects Effect(DragDropEffects allowed, bool valid) => valid && (allowed & DragDropEffects.Copy) != 0 ? DragDropEffects.Copy : DragDropEffects.None;
 }

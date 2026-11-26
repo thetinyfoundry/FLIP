@@ -10,9 +10,9 @@ Notable changes to **FLIP**. Versions before 1.0.0 were distributed only on GitH
 - **Engine suggestions.** When a missing engine would add formats for the files on the wheel, a notice says so once per engine. Clicking it opens *Engines & GPU*, where each missing engine lists the formats it adds next to its 1-Click button. The wheel itself is unchanged.
 
 Contributed by [@augustodecans-dev](https://github.com/augustodecans-dev) in [#7](https://github.com/thetinyfoundry/FLIP/pull/7). Thank you!
-- **Hold-to-open.** Hold the mouse button on a selected file in File Explorer or on the Desktop to open the wheel without pressing a key. It is off by default and adds to the drag gesture, which works as before. The hold time is adjustable from 1 to 8 seconds under *Activation & Input*. Right-click or Esc closes the wheel.
-- **Folders and RAR.** With hold-to-open, a selected folder becomes a ZIP, or a RAR when WinRAR is installed, next to the original folder. Archiving a folder never sends its files to the Recycle Bin.
-- **Unavailable tools.** Tools that cannot run on the selection are dimmed, and clicking one explains why inside the wheel. Notices also appear in a dark box on the screen with the cursor.
+- **Hold-to-open.** Hold the mouse button on a selected file in File Explorer or on the Desktop to open the wheel without pressing a key. It is off by default and adds to the drag gesture, which works as before. The hold time is adjustable from 1 to 8 seconds under *Activation & Input*. It starts only on a file or folder, never on scroll bars or empty space, and FLIP listens to the mouse only while File Explorer or the Desktop is in front. Right-click or Esc closes the wheel.
+- **Folders and RAR.** A folder, dragged onto the wheel or opened with hold-to-open, becomes a ZIP, or a RAR when WinRAR is installed, next to the original folder. Empty subfolders are kept. Archiving a folder never sends its files to the Recycle Bin.
+- **Unavailable tools.** Tools that cannot run on the selection are dimmed, and clicking one explains why inside the wheel. Waveform and OCR stay visible when FFmpeg or Tesseract is missing. Notices also appear in a dark box on the screen with the cursor.
 - **Merge PDF page size.** Press **A** to keep the original page size or choose A4 or A3, portrait or landscape.
 - **Scroll without dragging.** The mouse wheel switches between formats and tools on any open wheel. **A** and **Z** also work when the wheel was not opened by dragging.
 

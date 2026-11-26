@@ -43,11 +43,12 @@ public static class EngineBootstrap
             RoutePlanner.RegisterEngine(new CalibreEngine());
             RoutePlanner.RegisterEngine(new LocalAiEngine());
 
-            // ── 3. Quick Tools per il Retro della Ruota (11 strumenti rapidi) ─────
+            // ── 3. Quick Tools per il Retro della Ruota (12 strumenti rapidi) ─────
             RoutePlanner.RegisterQuickTool(new CropQuickTool());
             RoutePlanner.RegisterQuickTool(new RotateQuickTool());
             RoutePlanner.RegisterQuickTool(new MergePdfQuickTool());
             RoutePlanner.RegisterQuickTool(new PackZipQuickTool());
+            RoutePlanner.RegisterQuickTool(new PackRarQuickTool());
             RoutePlanner.RegisterQuickTool(new TargetSizeQuickTool());
             RoutePlanner.RegisterQuickTool(new RemoveBgQuickTool());
             RoutePlanner.RegisterQuickTool(new OcrQuickTool());
@@ -123,7 +124,7 @@ public static class EngineBootstrap
             AvailableEnginesCount = availableTotal,
             ExternalEnginesAvailableCount = availableExternal,
             TotalAvailableEdges = totalEdges,
-            RegisteredQuickToolsCount = 11,
+            RegisteredQuickToolsCount = 12,
             ExternalEngineStatuses = statuses
         };
     }

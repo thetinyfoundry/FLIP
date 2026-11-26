@@ -782,15 +782,21 @@ internal sealed class GazeOrbWindow : Window
     }
 
     /// <summary>Filtra una lista di percorsi selezionati applicando le regole locali di <see cref="Policy.ReadFiles"/>.</summary>
-    internal static string[] FilterLocalSelection(IEnumerable<string?> candidatePaths)
+    internal static string[] FilterLocalSelection(IEnumerable<string?> candidatePaths, bool allowFolders = false)
     {
         var filesOnly = new List<string>();
+        var folders = new List<string>();
         foreach (string? raw in candidatePaths)
         {
             if (string.IsNullOrWhiteSpace(raw)) continue;
             try
             {
-                if (System.IO.Path.IsPathFullyQualified(raw) && File.Exists(raw))
+                if (!System.IO.Path.IsPathFullyQualified(raw)) continue;
+                if (Directory.Exists(raw))
+                {
+                    if (allowFolders) folders.Add(raw);
+                }
+                else if (File.Exists(raw))
                 {
                     var attrs = File.GetAttributes(raw);
                     if ((attrs & FileAttributes.Directory) == 0)
@@ -802,16 +808,20 @@ internal sealed class GazeOrbWindow : Window
             catch (ArgumentException) { }
         }
 
-        if (filesOnly.Count == 0) return [];
-        var data = new DataObject(DataFormats.FileDrop, filesOnly.ToArray());
-        return Policy.ReadFiles(data);
+        var accepted = new List<string>(folders);
+        if (filesOnly.Count > 0)
+        {
+            var data = new DataObject(DataFormats.FileDrop, filesOnly.ToArray());
+            accepted.AddRange(Policy.ReadFiles(data));
+        }
+        return accepted.ToArray();
     }
 
     /// <summary>
     /// Legge i file attualmente selezionati nella finestra in primo piano (Desktop o Esplora File)
     /// o in fallback dalla lista FileDrop copiata di recente negli Appunti.
     /// </summary>
-    internal static string[] CaptureSelectedFiles(bool allowClipboardFallback = true)
+    internal static string[] CaptureSelectedFiles(bool allowClipboardFallback = true, bool allowFolders = false)
     {
         TrackForegroundShellAndClipboard();
 
@@ -848,21 +858,21 @@ internal sealed class GazeOrbWindow : Window
                 //    così una finestra di Esplora File rimasta aperta dietro non ruba mai la selezione!
                 if (fgIsDesktop)
                 {
-                    var desktopFiles = ReadDesktopSelection(shellWindows);
+                    var desktopFiles = ReadDesktopSelection(shellWindows, allowFolders);
                     if (desktopFiles.Length > 0) return desktopFiles;
                 }
 
                 // 2. Se Esplora File è in primo piano, leggi PRIMA la selezione di quell'HWND specifico.
                 if (fgIsExplorer)
                 {
-                    var activeExplorerFiles = ReadExplorerSelectionForHwnd(shellWindows, fgRoot);
+                    var activeExplorerFiles = ReadExplorerSelectionForHwnd(shellWindows, fgRoot, allowFolders);
                     if (activeExplorerFiles.Length > 0) return activeExplorerFiles;
                 }
 
                 // 3. Se non era in primo piano Esplora File, controlla prima il Desktop.
                 if (!fgIsDesktop && !fgIsExplorer)
                 {
-                    var desktopFiles = ReadDesktopSelection(shellWindows);
+                    var desktopFiles = ReadDesktopSelection(shellWindows, allowFolders);
                     if (desktopFiles.Length > 0) return desktopFiles;
                 }
 
@@ -870,14 +880,14 @@ internal sealed class GazeOrbWindow : Window
                 foreach (nint explorerHwnd in EnumerateVisibleExplorerWindowsZOrder())
                 {
                     if (explorerHwnd == fgRoot) continue;
-                    var files = ReadExplorerSelectionForHwnd(shellWindows, explorerHwnd);
+                    var files = ReadExplorerSelectionForHwnd(shellWindows, explorerHwnd, allowFolders);
                     if (files.Length > 0) return files;
                 }
 
                 // 5. Fallback sul Desktop se l'Explorer attivo era vuoto ma c'è un file selezionato sul Desktop.
                 if (fgIsExplorer)
                 {
-                    var desktopFiles = ReadDesktopSelection(shellWindows);
+                    var desktopFiles = ReadDesktopSelection(shellWindows, allowFolders);
                     if (desktopFiles.Length > 0) return desktopFiles;
                 }
             }
@@ -910,7 +920,7 @@ internal sealed class GazeOrbWindow : Window
         return [];
     }
 
-    private static string[] ReadDesktopSelection(IShellWindows shellWindows)
+    private static string[] ReadDesktopSelection(IShellWindows shellWindows, bool allowFolders = false)
     {
         object missing = Type.Missing;
         object? desktopWin = null;
@@ -919,7 +929,7 @@ internal sealed class GazeOrbWindow : Window
             const int SwcDesktop = 0x08;
             const int SwfoNeedDispatch = 0x01;
             desktopWin = shellWindows.FindWindowSW(ref missing, ref missing, SwcDesktop, out _, SwfoNeedDispatch);
-            return desktopWin != null ? ExtractSelectedFilesFromShellWindow(desktopWin) : [];
+            return desktopWin != null ? ExtractSelectedFilesFromShellWindow(desktopWin, allowFolders) : [];
         }
         catch (Exception ex) when (ex is COMException or InvalidCastException)
         {
@@ -931,7 +941,7 @@ internal sealed class GazeOrbWindow : Window
         }
     }
 
-    private static string[] ReadExplorerSelectionForHwnd(IShellWindows shellWindows, nint targetHwnd)
+    private static string[] ReadExplorerSelectionForHwnd(IShellWindows shellWindows, nint targetHwnd, bool allowFolders = false)
     {
         var matchingTabs = new List<object>();
         try
@@ -974,14 +984,14 @@ internal sealed class GazeOrbWindow : Window
 
             if (visibleTab != null)
             {
-                var files = ExtractSelectedFilesFromShellWindow(visibleTab);
+                var files = ExtractSelectedFilesFromShellWindow(visibleTab, allowFolders);
                 if (files.Length > 0) return files;
             }
 
             foreach (object tab in matchingTabs)
             {
                 if (ReferenceEquals(tab, visibleTab)) continue;
-                var files = ExtractSelectedFilesFromShellWindow(tab);
+                var files = ExtractSelectedFilesFromShellWindow(tab, allowFolders);
                 if (files.Length > 0) return files;
             }
 
@@ -1021,7 +1031,7 @@ internal sealed class GazeOrbWindow : Window
         }
     }
 
-    private static string[] ExtractSelectedFilesFromShellWindow(object winObj)
+    private static string[] ExtractSelectedFilesFromShellWindow(object winObj, bool allowFolders = false)
     {
         object? doc = null;
         object? selected = null;
@@ -1060,7 +1070,7 @@ internal sealed class GazeOrbWindow : Window
             SafeReleaseCom(doc);
         }
 
-        return FilterLocalSelection(candidates);
+        return FilterLocalSelection(candidates, allowFolders);
     }
 
     private static IEnumerable<nint> EnumerateVisibleExplorerWindowsZOrder()

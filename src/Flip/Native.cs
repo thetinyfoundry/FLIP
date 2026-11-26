@@ -154,6 +154,23 @@ internal static class Native
         return new PlacementResult(placement.X, placement.Y, placement.Size, monitor, info);
     }
 
+    /// <summary>Posiziona una finestra quadrata centrata sul cursore, in pixel fisici.</summary>
+    internal static PlacementResult PlaceCenteredAtCursor(nint hwnd, double dipSize)
+    {
+        GetCursorPos(out var point);
+        nint monitor = MonitorFromPoint(point, 2);
+        var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
+        if (!GetMonitorInfo(monitor, ref info)) throw new InvalidOperationException("Monitor lookup failed.");
+
+        uint monitorDpi = GetMonitorDpi(monitor, hwnd);
+        double scale = monitorDpi / 96.0;
+        int sizePx = Math.Max(1, (int)Math.Round(dipSize * scale));
+        var placement = Clamp(point.X, point.Y, sizePx, info.Work);
+        if (!SetWindowPos(hwnd, new nint(-1), placement.X, placement.Y, placement.Size, placement.Size, 0x10))
+            throw new InvalidOperationException("Window placement failed.");
+        return new PlacementResult(placement.X, placement.Y, placement.Size, monitor, info);
+    }
+
     internal static void Position(nint hwnd) => _ = PlaceNearCursor(hwnd, centered: false);
 
     internal static void PositionCentered(nint hwnd, int verticalBiasDip = -48) =>

@@ -47,11 +47,13 @@ Both editions share the same version number and are released together.
 
 ## What you can do
 
-- **Wheel and aura.** The wheel follows the cursor across displays. Press **Tab** or scroll to switch between formats and tools.
-- **QuickLook.** Press **Space** while dragging: 3D models, image palettes, text and waveforms.
-- **Quick tools.** Crop, rotate, resize, blur, merge PDFs, remove backgrounds, extract text with OCR and bundle a ZIP.
-- **Archiving and transcription.** PDF/A-2b and local TXT or SRT transcripts with Whisper.
-- **Watch folders, presets and accessibility.** Automatic conversions, recipes and Tobii gaze selection.
+- **Wheel and aura.** The wheel follows the cursor across displays. Press **Tab** or scroll to switch between formats and tools, including when the wheel was opened by holding the mouse button. Mixed selections can be grouped by file type.
+- **QuickLook.** Press **Space** while dragging to preview a file. Explore 3D models with Orbit and a four-view blueprint, inspect images and their color palettes, or preview text and audio waveforms.
+- **Hold-to-open.** Enable it under *Activation & Input* and hold the mouse button on a selected file in File Explorer or on the Desktop (3 seconds by default, adjustable) to open the wheel without pressing any key. A small progress ring appears after half a second; press the right mouse button or Esc to close the wheel.
+- **Quick tools.** Crop, rotate, resize, blur sensitive regions, merge PDFs, remove image backgrounds, extract text with OCR, and bundle outputs in ZIP or, when WinRAR is installed, RAR. Selected folders are archived next to the original folder.
+- **Optional engines.** If a selected format needs an engine that is not installed, FLIP asks whether to install it before starting the conversion.
+- **Archival PDF and offline transcription.** Convert supported files to PDF/A-2b. **Merge PDF** preserves each source page's original size and orientation; press **A** to choose Original, A4 or A3, portrait or landscape. With the optional Whisper engine, transcribe audio or video to TXT or SRT locally.
+- **Watch folders, presets and accessibility.** Automatic conversions, recipes, the Settings Hub and Tobii gaze selection.
 
 ## Formats and engines
 

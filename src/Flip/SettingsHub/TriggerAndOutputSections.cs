@@ -129,6 +129,83 @@ public static class TriggerAndOsSection
             active => SettingsStore.Current.Update(s => s.EnableFlipWithTabOrScroll = active));
         stackTrigger.Children.Add(toggleFlip);
 
+        var toggleHold = HubUi.CreateToggle(
+            Loc.T("Apri tenendo premuto il click su un file", "Hold click on a file to open"),
+            Loc.T("Tieni premuto il pulsante su un file selezionato in Esplora File o sul Desktop per aprire la ruota, senza premere tasti. Per uscire: tasto destro o Esc.",
+                 "Hold the mouse button on a selected file in File Explorer or on the Desktop to open the wheel, without pressing any key. To close it: right-click or Esc."),
+            settings.HoldToOpenEnabled,
+            active => store.Update(s => s.HoldToOpenEnabled = active));
+        stackTrigger.Children.Add(toggleHold);
+
+        var holdHeader = new Grid { Margin = new Thickness(0, 14, 0, 6) };
+        holdHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
+        holdHeader.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+        holdHeader.Children.Add(new TextBlock
+        {
+            Text = Loc.T("Tempo di pressione", "Hold time"),
+            FontSize = 12,
+            Foreground = HubUi.TextSecondary,
+            VerticalAlignment = VerticalAlignment.Center
+        });
+        int initialHold = Math.Clamp(settings.HoldToOpenMilliseconds, 1000, 8000);
+        var holdValueText = new TextBlock
+        {
+            Text = $"{initialHold} ms",
+            FontSize = 12.5,
+            FontWeight = FontWeights.Bold,
+            Foreground = HubUi.Accent,
+            VerticalAlignment = VerticalAlignment.Center
+        };
+        Grid.SetColumn(holdValueText, 1);
+        holdHeader.Children.Add(holdValueText);
+        stackTrigger.Children.Add(holdHeader);
+
+        var holdSlider = new Slider
+        {
+            Style = DarkSliderStyle.Value,
+            Minimum = 1000,
+            Maximum = 8000,
+            TickFrequency = 250,
+            IsSnapToTickEnabled = true,
+            SmallChange = 250,
+            LargeChange = 1000,
+            Value = initialHold
+        };
+        bool syncingHoldSlider = false;
+        holdSlider.ValueChanged += (_, e) =>
+        {
+            int nextMs = Math.Clamp((int)Math.Round(e.NewValue), 1000, 8000);
+            holdValueText.Text = $"{nextMs} ms";
+            if (syncingHoldSlider) return;
+            if (store.CreateSnapshot().HoldToOpenMilliseconds != nextMs)
+                store.Update(s => s.HoldToOpenMilliseconds = nextMs);
+        };
+        stackTrigger.Children.Add(holdSlider);
+
+        var holdPresetRow = new WrapPanel { Margin = new Thickness(0, 8, 0, 0) };
+        foreach (var (ms, caption) in new (int Ms, string Caption)[]
+        {
+            (2000, Loc.T("Breve · 2000 ms", "Short · 2000 ms")),
+            (3000, Loc.T("Standard · 3000 ms", "Standard · 3000 ms")),
+            (4000, Loc.T("Comodo · 4000 ms", "Relaxed · 4000 ms")),
+            (5000, Loc.T("Lungo · 5000 ms", "Long · 5000 ms"))
+        })
+        {
+            var presetBtn = HubUi.CreateButton(caption, false, () =>
+            {
+                syncingHoldSlider = true;
+                try { holdSlider.Value = ms; }
+                finally { syncingHoldSlider = false; }
+                holdValueText.Text = $"{ms} ms";
+                store.Update(s => s.HoldToOpenMilliseconds = ms);
+            });
+            presetBtn.Padding = new Thickness(10, 4, 10, 4);
+            presetBtn.FontSize = 11;
+            presetBtn.Margin = new Thickness(0, 0, 6, 4);
+            holdPresetRow.Children.Add(presetBtn);
+        }
+        stackTrigger.Children.Add(holdPresetRow);
+
         root.Children.Add(cardTrigger);
 
         // ── Card 2: Clipboard & Integrazione Sistema ────────────────────────

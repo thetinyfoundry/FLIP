@@ -116,6 +116,7 @@ internal sealed class Wheel : Window
         Padding = new Thickness(12, 8, 12, 8)
     };
     readonly DispatcherTimer toolNoticeTimer = new() { Interval = TimeSpan.FromMilliseconds(3800) };
+    const double ToolNoticeLeft = 14, ToolNoticeTop = 132;
     /// <summary>Pillola "Formati · Strumenti" nella parte bassa del cerchio centrale (coordinate canvas, raggio ≤ 88 &lt; 98 degli spicchi).</summary>
     internal static readonly Rect FacePillRect = new(150, 250, 120, 22);
     const double CenterTextLeft = 135, CenterTextWidth = 150, CenterTextTop = 152;
@@ -282,16 +283,7 @@ internal sealed class Wheel : Window
                     CliResolver.Resolve("ffmpeg", settings) == null)
                     return Loc.T("Per comprimere video serve FFmpeg installato o configurato.", "FFmpeg must be installed or configured for video compression.");
                 return null;
-            case "waveform":
-                if (files.Any(path => !System.IO.Path.GetExtension(path).Equals(".wav", StringComparison.OrdinalIgnoreCase)) &&
-                    CliResolver.Resolve("ffmpeg", settings) == null)
-                    return Loc.T("Per l'onda sonora da formati compressi serve FFmpeg.", "FFmpeg is required to generate waveforms from compressed audio.");
-                return null;
-            case "ocr":
-                if (files.Any(path => !System.IO.Path.GetExtension(path).Equals(".pdf", StringComparison.OrdinalIgnoreCase)) &&
-                    CliResolver.Resolve("tesseract", settings) == null)
-                    return Loc.T("Per l'OCR sulle immagini serve Tesseract installato o configurato.", "Tesseract must be installed or configured for image OCR.");
-                return null;
+            // Onda sonora e OCR non arrivano qui senza FFmpeg/Tesseract: li esclude già CanHandle.
             case "remove_bg":
                 return OnnxRemoveBgEngine.IsModelInstalled(settings) ? null : OnnxRemoveBgEngine.MissingModelMessage;
             default:
@@ -329,13 +321,11 @@ internal sealed class Wheel : Window
         ? ToolGroupFor(index)?.Actions.Length ?? 0
         : (uint)index < (uint)frontSlots.Length ? frontSlots[index].Children.Length : 0;
     int selected = -1;
-    bool dropping, closing, converting, packOutputIntoZip;
-    // L'ultimo mouse-up appartiene ancora al click tenuto premuto che ha aperto la ruota:
-    // non deve selezionare un settore. Usa un intervallo, non un flag persistente,
-    // così un rilascio fuori dalla finestra non blocca il clic successivo.
-    long suppressPointerUpUntil;
-    internal void SuppressPointerUpFor(int milliseconds) =>
-        suppressPointerUpUntil = Environment.TickCount64 + milliseconds;
+    bool dropping, closing, converting, packOutputIntoZip, payloadHasFolder;
+    // Il rilascio del click tenuto premuto che ha aperto la ruota non deve scegliere uno spicchio,
+    // qualunque sia la sua durata: si ignora ogni rilascio finché la ruota non vede una nuova pressione.
+    bool awaitingFreshPress;
+    internal void IgnoreReleaseUntilNextPress() => awaitingFreshPress = true;
     internal bool PackOutputIntoZip
     {
         get => packOutputIntoZip;
@@ -435,8 +425,8 @@ internal sealed class Wheel : Window
         surface.Children.Add(rememberedFanLayer);
         surface.Children.Add(mixedGroupBar);
         toolNotice.Child = toolNoticeText;
-        Canvas.SetLeft(toolNotice, 14);
-        Canvas.SetTop(toolNotice, 132);
+        Canvas.SetLeft(toolNotice, ToolNoticeLeft);
+        Canvas.SetTop(toolNotice, ToolNoticeTop);
         surface.Children.Add(toolNotice);
         toolNoticeTimer.Tick += (_, _) =>
         {
@@ -474,6 +464,7 @@ internal sealed class Wheel : Window
                 HandleDragScroll((short)Math.Clamp(e.Delta, short.MinValue, short.MaxValue));
             e.Handled = true;
         };
+        IsKeyboardFocusWithinChanged += (_, e) => keyboardFocused = (bool)e.NewValue;
         PreviewKeyDown += (_, e) =>
         {
             if (e.Key == Key.Escape) Dismiss("escape-focused");
@@ -492,7 +483,23 @@ internal sealed class Wheel : Window
                 else MoveSelection(-1);
                 e.Handled = true;
             }
+            else if (!dropping && e.Key == Key.A && Keyboard.Modifiers == ModifierKeys.None)
+            {
+                HandleKeyCommand(WheelCommand.NextPreset);
+                e.Handled = true;
+            }
+            else if (!dropping && e.Key == Key.Z && Keyboard.Modifiers == ModifierKeys.None)
+            {
+                HandleKeyCommand(WheelCommand.ToggleZip);
+                e.Handled = true;
+            }
             else if (!converting && !flipping && e.Key == Key.Space && CanPreviewInGazeBar)
+            {
+                TriggerQuickLook("keyboard-space");
+                e.Handled = true;
+            }
+            // Come durante il drag: Spazio apre l'anteprima rapida. Invio resta la scelta dello spicchio.
+            else if (!dropping && e.Key == Key.Space && CanUseCommand(WheelCommand.QuickLook))
             {
                 TriggerQuickLook("keyboard-space");
                 e.Handled = true;
@@ -504,14 +511,10 @@ internal sealed class Wheel : Window
             }
         };
         MouseMove += (_, e) => { if (!dropping && !converting) TrackPointer(e.GetPosition(canvas)); };
+        PreviewMouseDown += (_, _) => awaitingFreshPress = false;
         MouseLeftButtonUp += (_, e) =>
         {
-            if (Environment.TickCount64 < suppressPointerUpUntil)
-            {
-                suppressPointerUpUntil = 0;
-                return;
-            }
-            if (dropping || converting) return;
+            if (awaitingFreshPress || dropping || converting) return;
             var point = e.GetPosition(canvas);
             if (IsOverFacePill(point))
             {
@@ -522,16 +525,11 @@ internal sealed class Wheel : Window
         };
         PreviewMouseRightButtonUp += (_, _) =>
         {
-            if (Environment.TickCount64 < suppressPointerUpUntil)
-            {
-                suppressPointerUpUntil = 0;
-                return;
-            }
-            if (dropping || converting) return;
+            if (awaitingFreshPress || dropping || converting) return;
             Dismiss("right-click");
         };
         MouseLeave += (_, _) => { if (!dropping) TrackLeave(); };
-        Closed += (_, _) => { closing = true; CancelPendingOpenCascade(); gazePollTimer.Stop(); ClearGazeVisual(); progressTimer?.Stop(); leaveTimer.Stop(); facePillTimer.Stop(); };
+        Closed += (_, _) => { closing = true; CancelPendingOpenCascade(); gazePollTimer.Stop(); ClearGazeVisual(); progressTimer?.Stop(); leaveTimer.Stop(); facePillTimer.Stop(); toolNoticeTimer.Stop(); };
     }
 
     internal void Open(string[] sources, bool drag, bool stickyGaze = false)
@@ -540,7 +538,7 @@ internal sealed class Wheel : Window
         previousDragPaths = null;
         this.stickyGaze = stickyGaze;
         openedFromHost = true;
-        dropping = drag; converting = false; closing = false; packOutputIntoZip = false; scrollDelta = 0;
+        dropping = drag; converting = false; closing = false; packOutputIntoZip = false; scrollDelta = 0; awaitingFreshPress = false;
         gazeBar.Visibility = Visibility.Collapsed;
         if (!ScreenEdgeAuraWindow.Suppressed && playSound?.Target is WheelSound wheelSound)
             wheelSound.WarmUp();
@@ -575,9 +573,12 @@ internal sealed class Wheel : Window
         }, DispatcherPriority.Render);
     }
 
-    internal bool CanUseDragCommand(WheelCommand command)
+    internal bool CanUseDragCommand(WheelCommand command) => dropping && CanUseCommand(command);
+
+    /// <summary>Comandi disponibili sulla ruota aperta, sia durante il drag sia senza (pressione prolungata, vassoio).</summary>
+    bool CanUseCommand(WheelCommand command)
     {
-        if (!dropping || converting || closing || flipping) return false;
+        if (converting || closing || flipping) return false;
         return command switch
         {
             WheelCommand.FlipFace => settings.EnableFlipWithTabOrScroll && runTool != null,
@@ -601,7 +602,24 @@ internal sealed class Wheel : Window
 
     internal void HandleDragCommand(WheelCommand command)
     {
-        if (!CanUseDragCommand(command)) return;
+        if (CanUseDragCommand(command)) ExecuteCommand(command);
+    }
+
+    /// <summary>Spazio, A, Z e Tab sulla ruota aperta senza drag (pressione prolungata, vassoio).</summary>
+    internal void HandleKeyCommand(WheelCommand command)
+    {
+        if (!dropping && CanUseCommand(command)) ExecuteCommand(command);
+    }
+
+    /// <summary>
+    /// Per l'hook di tastiera (altro thread): la ruota senza drag non ha il focus, che è rimasto a Esplora File
+    /// dopo la pressione prolungata. Solo in quel caso l'hook gestisce e consuma i tasti della ruota.
+    /// </summary>
+    internal bool AcceptsHookKeyCommand(WheelCommand command) => !dropping && !keyboardFocused && CanUseCommand(command);
+    volatile bool keyboardFocused;
+
+    void ExecuteCommand(WheelCommand command)
+    {
         if (command == WheelCommand.QuickLook)
         {
             // Spazio durante il drag: chiude la ruota e apre FLIP QuickLook sul file trascinato.
@@ -627,7 +645,9 @@ internal sealed class Wheel : Window
         FlipFace();
     }
 
-    bool CanFlipFace => !converting && !closing && !flipping && settings.EnableFlipWithTabOrScroll && runTool != null;
+    // Una cartella offre solo gli archivi: la faccia Formati sarebbe vuota.
+    bool CanFlipFace => !converting && !closing && !flipping && settings.EnableFlipWithTabOrScroll && runTool != null &&
+                        !payloadHasFolder;
 
     /// <summary>
     /// Gira la ruota di 180° tra Formati e Quick Tools (Tab, rotellina, clic o hover sulla pillola) con un ribaltamento 3D
@@ -776,6 +796,7 @@ internal sealed class Wheel : Window
         }
         var extensions = GetSourceExtensions(activeFiles);
         bool hasFolder = ContainsDirectory(activeFiles);
+        payloadHasFolder = hasFolder;
         if (!sourceExtensions.SequenceEqual(extensions) || hasFolder)
         {
             sourceExtensions = extensions;
@@ -886,18 +907,8 @@ internal sealed class Wheel : Window
                 string[] extensions = payload.Select(path =>
                     System.IO.Path.GetExtension(path) is { Length: > 0 } extension ? extension : "*").ToArray();
                 var ordered = settings.EnabledBackSideTools;
+                // Le cartelle rispettano gli strumenti scelti dall'utente: se ZIP è disattivato resta solo RAR.
                 var lookupSettings = settings;
-                if (hasFolder)
-                {
-                    var required = new List<string> { "pack_zip" };
-                    if (ordered.Contains("pack_rar", StringComparer.OrdinalIgnoreCase)) required.Add("pack_rar");
-                    var missing = required.Where(id => !ordered.Contains(id, StringComparer.OrdinalIgnoreCase)).ToArray();
-                    if (missing.Length > 0)
-                    {
-                        lookupSettings = settings.CreateSnapshot();
-                        lookupSettings.EnabledBackSideTools = [.. ordered, .. missing];
-                    }
-                }
                 var size = readSize ? imageSizes.GetOrAdd(payload[0], static path => new(() => ReadOrientedSize(path))).Value : null;
                 var found = OrderToolsForWheel(RoutePlanner.GetAvailableQuickTools(extensions, lookupSettings), ordered);
                 if (hasFolder) found = found.Where(t => t.Id is "pack_zip" or "pack_rar").ToArray();
@@ -1725,6 +1736,7 @@ internal sealed class Wheel : Window
         Canvas.SetLeft(outerRing, offset.X); Canvas.SetTop(outerRing, offset.Y);
         Canvas.SetLeft(rememberedFanLayer, offset.X); Canvas.SetTop(rememberedFanLayer, offset.Y);
         Canvas.SetLeft(dwellOverlay, offset.X); Canvas.SetTop(dwellOverlay, offset.Y);
+        Canvas.SetLeft(toolNotice, offset.X + ToolNoticeLeft); Canvas.SetTop(toolNotice, offset.Y + ToolNoticeTop);
         if (barPixels is { } bp)
         {
             var barOffset = fromDevice.Transform(new Vector(bp.Left - left, bp.Top - top));

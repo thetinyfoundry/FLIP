@@ -466,6 +466,7 @@ public static class HubUi
 /// </summary>
 public sealed class SettingsHubWindow : Window
 {
+    internal const int EnginesSection = 3;
     internal const int HistorySection = 5;
     internal const int GuideSectionIndex = 6;
     private static SettingsHubWindow? _instance;

@@ -188,6 +188,16 @@ public sealed class FlipSettings
     /// una sola volta alle installazioni esistenti, senza riattivare quelli disattivati dall'utente.</summary>
     public int BackSideToolsRevision { get; set => Set(ref field, value); } = CurrentBackSideToolsRevision;
 
+    /// <summary>
+    /// Motori già suggeriti con l'avviso "installalo per avere più formati": ognuno compare una sola volta.
+    /// Installarli o ignorarli resta una scelta dell'utente, dall'Hub.
+    /// </summary>
+    public List<string> SuggestedEngines
+    {
+        get => _isSnapshot ? [.. field] : field;
+        set => Set(ref field, value ?? []);
+    } = [];
+
     // ── 2. Trigger & OS ─────────────────────────────────────────────────
 
     /// <summary>Tasto di attivazione della ruota durante il drag (default: Freccia Giù).</summary>
@@ -358,6 +368,7 @@ public sealed class FlipSettings
         copy.StoreLock = null;
         copy.PinnedWheelFormatsByCategory = CopyPinnedFormats(copy.PinnedWheelFormatsByCategory);
         copy.EnabledBackSideTools = [.. copy.EnabledBackSideTools];
+        copy.SuggestedEngines = [.. copy.SuggestedEngines];
         copy.CustomEnginePaths = new(copy.CustomEnginePaths, copy.CustomEnginePaths.Comparer);
         copy.EnginePriorityOrder = [.. copy.EnginePriorityOrder];
         copy.WatchFolders = copy.WatchFolders.Where(rule => rule is not null).Select(rule => rule.Copy()).ToList();

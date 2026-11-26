@@ -5,6 +5,7 @@ using System.Windows.Media;
 using Microsoft.Win32;
 using Flip.Core;
 using Flip.Engines;
+using Flip.Routing;
 
 namespace Flip.SettingsHub;
 
@@ -129,9 +130,12 @@ public static class EnginesHubSection
         var rowRefreshers = new List<Action> { syncRemoveBgCard };
         var btnVerifyAll = HubUi.CreateButton(Loc.T("↻ Verifica motori", "↻ Verify engines"), false, () =>
         {
-            int activeCount = CliResolver.VerifyAndDetectEngines(SettingsStore.Current);
+            CliResolver.VerifyAndDetectEngines(SettingsStore.Current);
             OnnxRemoveBgEngine.CleanupStalePath(SettingsStore.Current);
             foreach (var refresh in rowRefreshers) refresh();
+            // Conta solo i motori elencati qui: WinRAR è rilevato ma non ha una riga nell'Hub.
+            var snapshot = SettingsStore.Current.CreateSnapshot();
+            int activeCount = knownEngines.Count(meta => CliResolver.Resolve(meta.Key, snapshot) != null);
             verifyStatus.Text = Loc.F("{0} di {1} motori pronti", "{0} of {1} engines ready", activeCount, knownEngines.Length);
             verifyStatus.Foreground = activeCount > 0 ? HubUi.Success : HubUi.TextSecondary;
         });
@@ -562,6 +566,29 @@ public static class EnginesHubSection
         topGrid.Children.Add(statusBadge);
         rowStack.Children.Add(topGrid);
 
+        // Motore mancante: cosa si guadagna installandolo. La ruota mostra solo ciò che è già disponibile.
+        var addsFormats = new TextBlock
+        {
+            FontSize = 11.5,
+            Foreground = HubUi.Accent,
+            TextWrapping = TextWrapping.Wrap,
+            Margin = new Thickness(0, 6, 0, 0),
+            Visibility = Visibility.Collapsed
+        };
+        rowStack.Children.Add(addsFormats);
+        void RefreshAddedFormats()
+        {
+            const int shown = 8;
+            var added = CliResolver.Resolve(meta.Key) == null
+                ? RoutePlanner.GetFormatsAddedByEngine(meta.Key, SettingsStore.Current.CreateSnapshot())
+                : [];
+            addsFormats.Visibility = added.Count > 0 ? Visibility.Visible : Visibility.Collapsed;
+            if (added.Count == 0) return;
+            string list = string.Join(", ", added.Take(shown)) + (added.Count > shown ? $" +{added.Count - shown}" : "");
+            addsFormats.Text = Loc.F("Installandolo la ruota offre anche: {0}", "Installing it adds to the wheel: {0}", list);
+            addsFormats.ToolTip = string.Join(", ", added);
+        }
+
         // Path input + Pulsanti
         var pathGrid = new Grid { Margin = new Thickness(0, 8, 0, 0) };
         pathGrid.ColumnDefinitions.Add(new ColumnDefinition { Width = new GridLength(1, GridUnitType.Star) });
@@ -586,6 +613,7 @@ public static class EnginesHubSection
         void RefreshBadge()
         {
             UpdateEngineBadge(statusBadge, meta.Key);
+            RefreshAddedFormats();
             afterBadgeRefresh?.Invoke();
         }
 

@@ -997,15 +997,8 @@ public sealed class MergePdfQuickTool : IQuickTool
         _ => A4Portrait
     };
 
-    private static List<PageSizePt> ReadPdfPageSizes(string path)
-    {
-        using var pdf = UglyToad.PdfPig.PdfDocument.Open(path);
-        var sizes = new List<PageSizePt>(pdf.NumberOfPages);
-        foreach (var page in pdf.GetPages())
-            // Page.Width/Height sono già orientati secondo /Rotate e CropBox.
-            sizes.Add(new((float)page.Width, (float)page.Height));
-        return sizes;
-    }
+    /// <summary>Tetto di pagine rasterizzate quando si forza il formato A4/A3 (come la conversione PDF → immagini).</summary>
+    private const int MaxRasterizedPages = 200;
 
     private static void WriteMergedPdf(string outPath, string[] inputs, QuickToolContext context)
     {
@@ -1029,7 +1022,13 @@ public sealed class MergePdfQuickTool : IQuickTool
             {
                 // Con un formato pagina forzato i PDF vengono rasterizzati sul nuovo foglio.
                 byte[] pdfBytes = File.ReadAllBytes(path);
-                var images = PDFtoImage.Conversion.ToImages(pdfBytes, options: new PDFtoImage.RenderOptions(Dpi: 144));
+#pragma warning disable CA1416
+                if (PDFtoImage.Conversion.GetPageCount(pdfBytes) > MaxRasterizedPages)
+                    throw new IOException(Loc.F("Con A4/A3 si possono unire PDF fino a {0} pagine: usa \"Originale\".",
+                        "With A4/A3, PDFs up to {0} pages can be merged: use \"Original\".", MaxRasterizedPages));
+                // Risoluzione adatta al foglio (circa 150 DPI su A3) con il tetto anti-memoria di PdfPages.
+                var images = PDFtoImage.Conversion.ToImages(pdfBytes, options: PdfPages.RenderOptions(pdfBytes, longestSide: 2480));
+#pragma warning restore CA1416
                 documents.Add(BuildPages(document =>
                 {
                     foreach (var bmp in images)
@@ -1047,7 +1046,8 @@ public sealed class MergePdfQuickTool : IQuickTool
                 documents.Add(BuildPages(document =>
                 {
                     using var bmp = BuiltInQuickTools.LoadOrientedBitmap(path);
-                    var size = preserveOriginal ? A4Portrait : forced;
+                    // "Originale": il foglio A4 segue l'orientamento dell'immagine.
+                    var size = preserveOriginal ? (bmp.Width > bmp.Height ? A4Landscape : A4Portrait) : forced;
                     DrawImagePage(document, bmp, size.Width, size.Height, 30);
                 }));
             }
@@ -1061,11 +1061,12 @@ public sealed class MergePdfQuickTool : IQuickTool
             {
                 throw new IOException(Loc.F("Formato non supportato per l'unione PDF: {0}", "Unsupported format for PDF merge: {0}", ext));
             }
-            context.Progress?.Report((double)(i + 1) / inputs.Length);
+            // Prima metà: preparazione delle pagine; seconda metà: unione. La barra non torna mai indietro.
+            context.Progress?.Report(0.5 * (i + 1) / inputs.Length);
         }
 
         PdfPages.Combine(documents, outPath, withoutMetadata: false, context.CancellationToken,
-            copied => context.Progress?.Report((double)copied / documents.Count));
+            copied => context.Progress?.Report(0.5 + 0.5 * copied / documents.Count));
     }
     private static byte[] BuildPages(Action<SKDocument> draw)
     {
@@ -1152,21 +1153,51 @@ internal static class ArchiveQuickToolSupport
 {
     internal readonly record struct Entry(string Path, string EntryName);
 
-    /// <summary>Espande le cartelle in file, conservando le sottocartelle nel nome dell'entry.</summary>
+    /// <summary>Tetto di file per l'archiviazione di cartelle: ogni file resta aperto in lettura fino al commit.</summary>
+    internal const int MaxFolderFiles = 5000;
+
+    /// <summary>Nelle cartelle si saltano collegamenti (niente cicli né file esterni), file offline e cloud non scaricati.</summary>
+    static readonly EnumerationOptions FolderEnumeration = new()
+    {
+        RecurseSubdirectories = true,
+        IgnoreInaccessible = true,
+        AttributesToSkip = FileAttributes.ReparsePoint | FileAttributes.Offline | Policy.CloudPlaceholder
+    };
+
+    internal static bool HasFolder(QuickToolContext context) => context.InputFilePaths.Any(Directory.Exists);
+
+    /// <summary>
+    /// Valida la selezione con <see cref="Policy.ValidateSelection"/> ed espande le cartelle in file,
+    /// conservando le sottocartelle nel nome dell'entry.
+    /// </summary>
     internal static List<Entry> Expand(QuickToolContext context)
     {
+        // Solo file: invariato rispetto a prima (già validati da chi apre la ruota, nessun tetto).
+        bool hasFolder = HasFolder(context);
+        string[] inputs = hasFolder
+            ? Policy.ValidateSelection([.. context.InputFilePaths])
+            : context.InputFilePaths.Where(File.Exists).ToArray();
+        if (hasFolder && inputs.Length == 0)
+            throw new IOException(Loc.T("Selezione non valida: usa file e cartelle locali, non di rete né collegamenti.",
+                "Invalid selection: use local files and folders, not network locations or links."));
+
         var entries = new List<Entry>();
-        foreach (string input in context.InputFilePaths)
+        foreach (string input in inputs)
         {
             context.CancellationToken.ThrowIfCancellationRequested();
             if (Directory.Exists(input))
             {
-                string root = Path.GetFullPath(input);
-                string folder = Path.GetFileName(Path.TrimEndingDirectorySeparator(root));
-                foreach (string file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
-                    entries.Add(new(file, Path.Combine(folder, Path.GetRelativePath(root, file)).Replace('\\', '/')));
+                string folder = Path.GetFileName(input);
+                foreach (string file in Directory.EnumerateFiles(input, "*", FolderEnumeration))
+                {
+                    context.CancellationToken.ThrowIfCancellationRequested();
+                    if (entries.Count >= MaxFolderFiles)
+                        throw new IOException(Loc.F("La cartella contiene più di {0} file: comprimila con un archiviatore dedicato.",
+                            "The folder contains more than {0} files: use a dedicated archiver.", MaxFolderFiles));
+                    entries.Add(new(file, Path.Combine(folder, Path.GetRelativePath(input, file)).Replace('\\', '/')));
+                }
             }
-            else if (File.Exists(input))
+            else
             {
                 entries.Add(new(input, Path.GetFileName(input)));
             }
@@ -1267,17 +1298,22 @@ public sealed class PackZipQuickTool : IQuickTool
                     context.CancellationToken.ThrowIfCancellationRequested();
                     string path = inputs[i];
                     string entryName = entryByPath.TryGetValue(path, out var mapped) ? mapped : Path.GetFileName(path);
+                    // Un nome duplicato riceve un suffisso restando nella propria sottocartella.
+                    int slash = entryName.LastIndexOf('/');
+                    string prefix = slash >= 0 ? entryName[..(slash + 1)] : "";
                     string stem = Path.GetFileNameWithoutExtension(entryName);
                     string ext = Path.GetExtension(entryName);
                     for (int suffix = 1; !entryNames.Add(entryName); suffix++)
-                        entryName = $"{stem}_{suffix}{ext}";
+                        entryName = $"{prefix}{stem}_{suffix}{ext}";
 
                     zip.CreateEntryFromFile(path, entryName, CompressionLevel.Optimal);
                     context.Progress?.Report((double)(i + 1) / inputs.Length);
                 }
             }
 
-            output.Commit(job, outPath, name, destinationDirectory: ArchiveQuickToolSupport.DestinationDirectoryFor(context));
+            // Archiviare una cartella non cestina mai i file che contiene, anche con "sostituisci l'originale".
+            output.Commit(job, outPath, name, allowRecycle: !ArchiveQuickToolSupport.HasFolder(context),
+                destinationDirectory: ArchiveQuickToolSupport.DestinationDirectoryFor(context));
             return Task.FromResult(output.Complete());
         }
         catch (Exception ex)
@@ -1338,20 +1374,35 @@ public sealed class PackRarQuickTool : IQuickTool
             string name = $"{ArchiveQuickToolSupport.ArchiveLabel(context.InputFilePaths)}_bundle.rar";
             string outPath = job.Stage(name);
 
-            var args = new List<string> { "a", "-ep1", "-r", "-y", outPath };
-            args.AddRange(context.InputFilePaths.Select(Path.GetFullPath));
-            var result = await CliResolver.RunProcessAsync(executable, args,
-                cancellationToken: context.CancellationToken, progress: context.Progress).ConfigureAwait(false);
+            // WinRAR riceve l'elenco esatto dei file già validati (niente -r: con un file singolo
+            // includerebbe gli omonimi delle sottocartelle), con percorsi relativi alla cartella comune.
+            var bases = entries.Select(BaseDirectoryOf).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+            string? baseDirectory = bases.Length == 1 ? bases[0] : null;
+            if (baseDirectory == null)
+                throw new IOException(Loc.T("Per RAR seleziona elementi della stessa cartella.", "For RAR, select items from the same folder."));
+
+            string listPath = Path.Combine(Path.GetDirectoryName(outPath)!, "flip-rar-list.txt");
+            File.WriteAllLines(listPath, entries.Select(entry => entry.EntryName.Replace('/', '\\')), new UnicodeEncoding(false, true));
+            bool gui = Path.GetFileName(executable).Equals("WinRAR.exe", StringComparison.OrdinalIgnoreCase);
+            var args = new List<string> { "a", "-y", "-scul" };
+            // WinRAR.exe è un programma con finestra: in background, senza finestre di errore modali.
+            if (gui) args.AddRange(["-ibck", "-inul"]);
+            args.AddRange([outPath, "@" + listPath]);
+            var result = await CliResolver.RunProcessAsync(executable, args, baseDirectory,
+                context.CancellationToken, progress: context.Progress).ConfigureAwait(false);
+            File.Delete(listPath);
             string detail = string.Join(" ", new[] { result.StdErr, result.StdOut }
                 .Where(s => !string.IsNullOrWhiteSpace(s))).Trim();
             if (detail.Length > 300) detail = detail[..300];
-            if (result.ExitCode > 1 || !File.Exists(outPath) || new FileInfo(outPath).Length == 0)
+            // Anche il codice 1 (avviso: file bloccati o saltati) è un errore: l'archivio sarebbe incompleto.
+            if (result.ExitCode != 0 || !File.Exists(outPath) || new FileInfo(outPath).Length == 0)
                 throw new IOException(string.IsNullOrWhiteSpace(detail)
                     ? Loc.F("WinRAR ha restituito il codice {0}.", "WinRAR exited with code {0}.", result.ExitCode)
                     : detail);
 
             context.Progress?.Report(1);
-            output.Commit(job, outPath, name, destinationDirectory: ArchiveQuickToolSupport.DestinationDirectoryFor(context));
+            output.Commit(job, outPath, name, allowRecycle: !ArchiveQuickToolSupport.HasFolder(context),
+                destinationDirectory: ArchiveQuickToolSupport.DestinationDirectoryFor(context));
             return output.Complete();
         }
         catch (Exception ex)
@@ -1359,6 +1410,16 @@ public sealed class PackRarQuickTool : IQuickTool
             return (output?.Fail(Loc.F("Errore compressione RAR: {0}", "RAR compression error: {0}", ex.Message))
                 ?? new QuickToolResult(false, [], Loc.F("Errore compressione RAR: {0}", "RAR compression error: {0}", ex.Message)));
         }
+    }
+
+    /// <summary>Cartella da cui il nome dell'entry è relativo: il percorso completo meno l'entry.</summary>
+    static string BaseDirectoryOf(ArchiveQuickToolSupport.Entry entry)
+    {
+        string full = Path.GetFullPath(entry.Path);
+        string relative = entry.EntryName.Replace('/', '\\');
+        return full.EndsWith(relative, StringComparison.OrdinalIgnoreCase)
+            ? Path.TrimEndingDirectorySeparator(full[..^relative.Length])
+            : Path.GetDirectoryName(full)!;
     }
 }
 

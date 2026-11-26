@@ -167,5 +167,39 @@ internal static class Policy
         catch (ArgumentException) { return []; }
         return paths.Select(Path.GetFullPath).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
     }
+    /// <summary>Selezione con cartelle (archivi ZIP/RAR): stesse regole dei file, più quelle sulle cartelle.</summary>
+    internal const int MaxSelectionItems = 128;
+
+    /// <summary>Attributi dei file cloud non scaricati (FILE_ATTRIBUTE_RECALL_ON_OPEN / RECALL_ON_DATA_ACCESS).</summary>
+    internal const FileAttributes CloudPlaceholder = (FileAttributes)0x00040000 | (FileAttributes)0x00400000;
+
+    /// <summary>
+    /// Valida una selezione che può contenere cartelle. Rifiuta tutta la selezione se un elemento è di rete,
+    /// offline, cloud non scaricato, un collegamento (junction/symlink) o la radice di un'unità:
+    /// le stesse garanzie di <see cref="ValidateFilePaths"/>, estese alle cartelle.
+    /// </summary>
+    internal static string[] ValidateSelection(string[] paths)
+    {
+        if (paths.Length is 0 or > MaxSelectionItems) return [];
+        var files = new List<string>();
+        try
+        {
+            foreach (var path in paths)
+            {
+                if (!Path.IsPathFullyQualified(path) || IsNetworkPath(path) || new DriveInfo(Path.GetPathRoot(path)!).DriveType == DriveType.Network) return [];
+                if (!Directory.Exists(path)) { files.Add(path); continue; }
+                string full = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path));
+                if (string.Equals(full, Path.TrimEndingDirectorySeparator(Path.GetPathRoot(full)!), StringComparison.OrdinalIgnoreCase)) return [];
+                if ((File.GetAttributes(full) & (FileAttributes.Offline | FileAttributes.ReparsePoint | CloudPlaceholder)) != 0) return [];
+            }
+        }
+        catch (IOException) { return []; }
+        catch (UnauthorizedAccessException) { return []; }
+        catch (ArgumentException) { return []; }
+        if (files.Count > 0 && ValidateFilePaths([.. files]).Length == 0) return [];
+        return paths.Select(path => Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+    }
+
     internal static DragDropEffects Effect(DragDropEffects allowed, bool valid) => valid && (allowed & DragDropEffects.Copy) != 0 ? DragDropEffects.Copy : DragDropEffects.None;
 }

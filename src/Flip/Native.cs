@@ -154,21 +154,26 @@ internal static class Native
         return new PlacementResult(placement.X, placement.Y, placement.Size, monitor, info);
     }
 
-    /// <summary>Posiziona una finestra quadrata centrata sul cursore, in pixel fisici.</summary>
-    internal static PlacementResult PlaceCenteredAtCursor(nint hwnd, double dipSize)
+    /// <summary>
+    /// Posiziona una finestra in basso a destra nell'area di lavoro del monitor del cursore, in pixel fisici
+    /// (le dimensioni arrivano in DIP e vengono scalate col DPI di quel monitor).
+    /// </summary>
+    internal static void PlaceBottomRightOnCursorMonitor(nint hwnd, double widthDip, double heightDip, double marginDip)
     {
         GetCursorPos(out var point);
         nint monitor = MonitorFromPoint(point, 2);
         var info = new MonitorInfo { Size = Marshal.SizeOf<MonitorInfo>() };
         if (!GetMonitorInfo(monitor, ref info)) throw new InvalidOperationException("Monitor lookup failed.");
 
-        uint monitorDpi = GetMonitorDpi(monitor, hwnd);
-        double scale = monitorDpi / 96.0;
-        int sizePx = Math.Max(1, (int)Math.Round(dipSize * scale));
-        var placement = Clamp(point.X, point.Y, sizePx, info.Work);
-        if (!SetWindowPos(hwnd, new nint(-1), placement.X, placement.Y, placement.Size, placement.Size, 0x10))
+        double scale = GetMonitorDpi(monitor, hwnd) / 96.0;
+        int width = Math.Max(1, (int)Math.Round(widthDip * scale));
+        int height = Math.Max(1, (int)Math.Round(heightDip * scale));
+        int margin = (int)Math.Round(marginDip * scale);
+        int x = Math.Max(info.Work.Left, info.Work.Right - width - margin);
+        int y = Math.Max(info.Work.Top, info.Work.Bottom - height - margin);
+        // SWP_NOACTIVATE (0x10): la notifica non ruba mai il focus.
+        if (!SetWindowPos(hwnd, new nint(-1), x, y, width, height, 0x10))
             throw new InvalidOperationException("Window placement failed.");
-        return new PlacementResult(placement.X, placement.Y, placement.Size, monitor, info);
     }
 
     internal static void Position(nint hwnd) => _ = PlaceNearCursor(hwnd, centered: false);

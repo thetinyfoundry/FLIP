@@ -100,7 +100,8 @@ internal sealed class HoldProgressWindow : Window
         try
         {
             nint handle = new WindowInteropHelper(this).Handle;
-            if (handle != 0) Native.PlaceCenteredAtCursor(handle, Size);
+            // Stessa logica della ruota: centrata sul cursore e riallineata se il DPI del monitor cambia.
+            if (handle != 0) _ = Native.PlaceNearCursor(handle, centered: false, dipSize: Size);
         }
         catch (Exception ex)
         {

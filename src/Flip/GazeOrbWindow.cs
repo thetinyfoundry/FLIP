@@ -791,7 +791,7 @@ internal sealed class GazeOrbWindow : Window
             if (string.IsNullOrWhiteSpace(raw)) continue;
             try
             {
-                if (!System.IO.Path.IsPathFullyQualified(raw)) continue;
+                if (!System.IO.Path.IsPathFullyQualified(raw) || Policy.IsNetworkPath(raw)) continue;
                 if (Directory.Exists(raw))
                 {
                     if (allowFolders) folders.Add(raw);
@@ -808,20 +808,17 @@ internal sealed class GazeOrbWindow : Window
             catch (ArgumentException) { }
         }
 
-        var accepted = new List<string>(folders);
-        if (filesOnly.Count > 0)
-        {
-            var data = new DataObject(DataFormats.FileDrop, filesOnly.ToArray());
-            accepted.AddRange(Policy.ReadFiles(data));
-        }
-        return accepted.ToArray();
+        // Con le cartelle la selezione è valida solo se lo è per intero (nessun file scartato in silenzio).
+        if (folders.Count > 0) return Policy.ValidateSelection([.. folders, .. filesOnly]);
+        if (filesOnly.Count == 0) return [];
+        return Policy.ReadFiles(new DataObject(DataFormats.FileDrop, filesOnly.ToArray()));
     }
 
     /// <summary>
     /// Legge i file attualmente selezionati nella finestra in primo piano (Desktop o Esplora File)
     /// o in fallback dalla lista FileDrop copiata di recente negli Appunti.
     /// </summary>
-    internal static string[] CaptureSelectedFiles(bool allowClipboardFallback = true, bool allowFolders = false)
+    internal static string[] CaptureSelectedFiles(bool allowClipboardFallback = true, bool allowFolders = false, bool foregroundOnly = false)
     {
         TrackForegroundShellAndClipboard();
 
@@ -868,6 +865,9 @@ internal sealed class GazeOrbWindow : Window
                     var activeExplorerFiles = ReadExplorerSelectionForHwnd(shellWindows, fgRoot, allowFolders);
                     if (activeExplorerFiles.Length > 0) return activeExplorerFiles;
                 }
+
+                // Pressione prolungata: conta solo la finestra sotto il gesto, mai una selezione rimasta altrove.
+                if (foregroundOnly) return [];
 
                 // 3. Se non era in primo piano Esplora File, controlla prima il Desktop.
                 if (!fgIsDesktop && !fgIsExplorer)

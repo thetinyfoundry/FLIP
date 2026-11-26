@@ -1,4 +1,4 @@
-using System.Collections.Concurrent;
+﻿using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using Flip.Core;
@@ -42,7 +42,7 @@ public static class RoutePlanner
     private static readonly ConcurrentDictionary<string, IQuickTool> _quickTools =
         new(StringComparer.OrdinalIgnoreCase);
 
-    // ── Registrazione ────────────────────────────────────────────────────────
+    // â”€â”€ Registrazione â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     public static void RegisterEngine(IConversionEngine engine)
     {
@@ -56,7 +56,7 @@ public static class RoutePlanner
         _quickTools[tool.Id] = tool;
     }
 
-    /// <summary>Restituisce un Quick Tool registrato per Id, indipendentemente dalla sua visibilità sul retro della ruota.</summary>
+    /// <summary>Restituisce un Quick Tool registrato per Id, indipendentemente dalla sua visibilitÃ  sul retro della ruota.</summary>
     public static IQuickTool? FindQuickTool(string id) =>
         _quickTools.TryGetValue(id, out var tool) ? tool : null;
 
@@ -82,6 +82,90 @@ public static class RoutePlanner
     private const int MaxRouteHops = 3;
 
     /// <summary>
+    /// Primo motore installabile mancante che aggiungerebbe formati di destinazione per tutti i file selezionati,
+    /// con quei formati (etichette brevi, al massimo <paramref name="maxFormats"/>). Applica gli stessi filtri
+    /// di visibilità della ruota, così suggerisce solo formati che l'utente vedrebbe davvero. Null se nessuno.
+    /// </summary>
+    internal static (string EngineId, string DisplayName, IReadOnlyList<string> Formats)? FindEngineAddingFormats(
+        IReadOnlyList<string> sourceExtensions, FlipSettings? settings, IReadOnlyCollection<string> installableEngineIds,
+        IReadOnlyCollection<string> skipEngineIds, int maxFormats = 5)
+    {
+        string[] sources = sourceExtensions.Select(NormalizeExtension).Distinct(StringComparer.Ordinal).ToArray();
+        if (sources.Length == 0 || sources.Contains("")) return null;
+
+        var snapshot = CaptureSettings(settings);
+        HashSet<string> CommonTargets(Dictionary<string, List<PlannedHop>> graph)
+        {
+            HashSet<string>? common = null;
+            foreach (string source in sources)
+            {
+                var targets = FindRoutes(source, graph, MaxRouteHops).Keys.Select(CanonicalExtension);
+                if (common == null) common = new HashSet<string>(targets, StringComparer.Ordinal);
+                else common.IntersectWith(targets);
+            }
+            return common ?? [];
+        }
+
+        var current = CommonTargets(BuildGraph(snapshot));
+        foreach (string source in sources) current.Add(CanonicalExtension(source));
+        var (unlockedCategories, unlockedFields) = GetContextualUnlocks(sources);
+
+        var candidates = _engines.Values
+            .Where(engine => engine.IsExternal && !engine.IsAvailable(snapshot) &&
+                             installableEngineIds.Contains(engine.Id, StringComparer.OrdinalIgnoreCase) &&
+                             !skipEngineIds.Contains(engine.Id, StringComparer.OrdinalIgnoreCase))
+            .OrderBy(engine => engine.Id, StringComparer.Ordinal);
+        // Si suggerisce il motore che aggiunge più formati per questi file (a parità, ordine alfabetico).
+        (IConversionEngine Engine, string[] Added)? best = null;
+        foreach (var engine in candidates)
+        {
+            var added = CommonTargets(BuildGraph(snapshot, [engine.Id]))
+                .Where(target => !current.Contains(target))
+                .Select(FormatRegistry.Find).OfType<FormatDefinition>()
+                .Where(format => FormatRegistry.IsVisibleInWheelForSource(format, snapshot.MaxVisibleGrade,
+                    snapshot.EnabledSpecialistFields, unlockedCategories, unlockedFields))
+                .OrderBy(format => format.Grade)
+                .ThenBy(format => format.Extension, StringComparer.Ordinal)
+                .Select(format => FormatRegistry.GetWheelShortLabel(format.Extension))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            if (added.Length > (best?.Added.Length ?? 0)) best = (engine, added);
+        }
+        return best is { } winner
+            ? (winner.Engine.Id, winner.Engine.DisplayName, winner.Added.Take(maxFormats).ToArray())
+            : null;
+    }
+
+    /// <summary>
+    /// Formati che solo questo motore sa leggere o creare tra quelli registrati e disponibili adesso:
+    /// è ciò che l'utente guadagna installandolo. Etichette brevi della ruota, senza duplicati, in ordine alfabetico.
+    /// </summary>
+    internal static IReadOnlyList<string> GetFormatsAddedByEngine(string engineId, FlipSettings? settings)
+    {
+        if (!_engines.TryGetValue(engineId, out var engine)) return [];
+        var snapshot = CaptureSettings(settings);
+        var covered = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var other in _engines.Values)
+        {
+            if (ReferenceEquals(other, engine) || !other.IsAvailable(snapshot)) continue;
+            foreach (var edge in other.SupportedEdges)
+            {
+                covered.Add(CanonicalExtension(NormalizeExtension(edge.SourceExtension)));
+                covered.Add(CanonicalExtension(NormalizeExtension(edge.TargetExtension)));
+            }
+        }
+
+        return engine.SupportedEdges
+            .SelectMany(edge => new[] { edge.SourceExtension, edge.TargetExtension })
+            .Select(extension => CanonicalExtension(NormalizeExtension(extension)))
+            .Where(extension => extension.Length > 0 && !covered.Contains(extension))
+            .Select(FormatRegistry.GetWheelShortLabel)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Order(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    /// <summary>
     /// Trova un motore esterno installabile che sbloccherebbe il formato selezionato.
     /// Il motore deve essere assente ma in grado di contribuire a un percorso valido.
     /// </summary>
@@ -105,10 +189,9 @@ public static class RoutePlanner
         bool ReachesTarget(params IConversionEngine[] forced)
         {
             var graph = BuildGraph(snapshot, forced.Select(engine => engine.Id).ToArray());
-            return sourceExtensions
-                .Select(NormalizeExtension)
-                .Where(source => source.Length > 0 && source != target)
-                .Any(source => FindRoutes(source, graph, MaxRouteHops).ContainsKey(target));
+            // Come la ruota: il formato deve essere raggiungibile da tutti i file selezionati.
+            var sources = sourceExtensions.Select(NormalizeExtension).Where(source => source.Length > 0 && source != target).ToArray();
+            return sources.Length > 0 && sources.All(source => FindRoutes(source, graph, MaxRouteHops).ContainsKey(target));
         }
 
         // Prova prima un solo motore, poi le coppie: alcune conversioni richiedono due motori opzionali.
@@ -272,7 +355,7 @@ public static class RoutePlanner
             (_, FormatCategory.TextAndMarkup) => ["txt", "md", "html", "pdf", "docx", "odt", "rtf", "pdfa", "json", "csv", "epub", "rst", "adoc"],
             ("rtf", _) => ["pdf", "docx", "txt", "md", "html", "odt", "pdfa"],
             (_, FormatCategory.DocumentAndEmail) => ["pdf", "txt", "md", "html", "odt", "rtf", "docx", "pdfa", "epub", "png", "jpg", "webp", "bmp", "gif", "tiff", "ico"],
-            // Il PDF è la richiesta più comune per un foglio: non deve finire dentro "+ EXTRA".
+            // Il PDF Ã¨ la richiesta piÃ¹ comune per un foglio: non deve finire dentro "+ EXTRA".
             ("csv" or "tsv", _) =>
                 ["xlsx", "pdf", "json", "csv", "tsv", "xml", "yaml", "html", "md", "ods", "toml", "ini"],
             (_, FormatCategory.Spreadsheet) =>
@@ -403,7 +486,7 @@ public static class RoutePlanner
                 // Prefer LibreOffice over simplified built-in / Pandoc converters for Office document layout fidelity.
                 if (IsOfficeDocumentToPdf(edge.SourceExtension, edge.TargetExtension) && engine.Id == "pdf_builtin")
                     cost += 20;
-                // LibreOffice conserva grafici e stampa dei fogli; una tabella CSV è più fedele con il lettore interno.
+                // LibreOffice conserva grafici e stampa dei fogli; una tabella CSV Ã¨ piÃ¹ fedele con il lettore interno.
                 if (edge.TargetExtension is "pdf" or "pdfa" &&
                     (engine.Id == "pdf_builtin" ? edge.SourceExtension is "xlsx" or "xlsm" or "xltx" or "xls" or "ods"
                         : engine.Id == "libreoffice" && edge.SourceExtension == "csv"))
@@ -479,7 +562,7 @@ public static class RoutePlanner
         if (IsDocxToPdf(sourceExtension, targetExtension))
             return hops.Count == 1 && hops[0].Engine.Id is "libreoffice" or "pdf_builtin";
 
-        // This Word export reconstructs editable text from the PDF, then saves a real Word 97–2003 file.
+        // This Word export reconstructs editable text from the PDF, then saves a real Word 97â€“2003 file.
         if (targetExtension == "doc")
             return sourceExtension == "pdf" && hops.Count == 2 &&
                 hops[0].Edge.TargetExtension == "docx" && hops[0].Engine.Id == "pdf_builtin" &&
@@ -611,7 +694,7 @@ public static class RoutePlanner
             FormatCategory.Vector or FormatCategory.Cad or FormatCategory.Model3D or FormatCategory.RasterAndRaw;
     }
 
-    // ── Esecuzione Pipeline Multi-Hop ────────────────────────────────────────
+    // â”€â”€ Esecuzione Pipeline Multi-Hop â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     public sealed record BatchConversionResult(string SourcePath, string TargetExtension, EngineExecutionResult Result);
 
@@ -780,7 +863,7 @@ public static class RoutePlanner
         if (IsDocxToPdf(route.SourceExtension, route.TargetExtension) &&
             route.Hops[0].Engine.Id == "libreoffice" && RequestsMetadataRemoval(parameters))
             throw new IOException(Loc.T(
-                "La conversione DOCX → PDF con impaginazione non supporta la rimozione dei metadati. Disattiva la rimozione nel preset PDF per continuare.",
+                "La conversione DOCX â†’ PDF con impaginazione non supporta la rimozione dei metadati. Disattiva la rimozione nel preset PDF per continuare.",
                 "Layout-preserving DOCX to PDF conversion does not support metadata removal. Turn off metadata removal in the PDF preset to continue."));
 
         IReadOnlyList<string> inputs = [source];
@@ -1010,7 +1093,7 @@ public static class RoutePlanner
         }
     }
 
-    // ── Helper Interni ───────────────────────────────────────────────────────
+    // â”€â”€ Helper Interni â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
     private static int GetEnginePriorityBonus(string engineId, List<string> priorityOrder)
     {
@@ -1052,8 +1135,8 @@ public static class RoutePlanner
     public sealed record FileExtensionGroup(string Extension, string Label, string[] Files);
 
     /// <summary>
-    /// Raggruppa un elenco di file per estensione normalizzata (ordinati per numerosità decrescente)
-    /// così sia la Ruota sia l'Hub possono recuperare batch misti senza bloccare l'utente.
+    /// Raggruppa un elenco di file per estensione normalizzata (ordinati per numerositÃ  decrescente)
+    /// cosÃ¬ sia la Ruota sia l'Hub possono recuperare batch misti senza bloccare l'utente.
     /// </summary>
     public static IReadOnlyList<FileExtensionGroup> GroupFilesByExtension(IEnumerable<string> filePaths)
     {

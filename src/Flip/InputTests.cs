@@ -344,6 +344,18 @@ internal static class InputTests
         }
         finally { noticeWheel.Close(); }
 
+        // Ruota aperta senza drag e senza focus (pressione prolungata): l'hook gestisce i suoi tasti; in drag no.
+        var keyWheel = new Wheel(_ => { }, (_, _) => { }, runTool: (_, _) => { }) { Opacity = 0, Topmost = false };
+        try
+        {
+            const BindingFlags priv = BindingFlags.Instance | BindingFlags.NonPublic;
+            bool acceptsWithoutDrag = keyWheel.AcceptsHookKeyCommand(WheelCommand.ToggleZip);
+            typeof(Wheel).GetField("dropping", priv)!.SetValue(keyWheel, true);
+            bool refusedInDrag = !keyWheel.AcceptsHookKeyCommand(WheelCommand.ToggleZip);
+            checks["hold_wheel_keys_reach_wheel_without_focus"] = acceptsWithoutDrag && refusedInDrag;
+        }
+        finally { keyWheel.Close(); }
+
         // Ogni messaggio (non solo gli strumenti non disponibili) deve avere una finestra visibile,
         // non solo il balloon della tray.
         var toast = new ToastWindow { Opacity = 0 };
@@ -366,6 +378,21 @@ internal static class InputTests
         cache.Get();
         checks["whisper_negative_cache_ttl_and_invalidation"] = cached && scans == 3;
 
+        // whisper-cli appeso dopo aver scritto la trascrizione: il file completo e fermo sblocca la conversione.
+        string stableFile = Path.Combine(Evidence.DirectoryPath, "whisper-stable-" + Guid.NewGuid().ToString("N") + ".txt");
+        try
+        {
+            File.WriteAllText(stableFile, "trascrizione");
+            bool ready = LocalAiEngine.WaitForStableOutputAsync(() => stableFile, TimeSpan.FromMilliseconds(120),
+                CancellationToken.None, TimeSpan.FromMilliseconds(20)).GetAwaiter().GetResult();
+            bool missingNeverReady;
+            using (var cts = new CancellationTokenSource(TimeSpan.FromMilliseconds(250)))
+                missingNeverReady = !LocalAiEngine.WaitForStableOutputAsync(() => null, TimeSpan.FromMilliseconds(50),
+                    cts.Token, TimeSpan.FromMilliseconds(20)).GetAwaiter().GetResult();
+            checks["whisper_hung_exit_releases_finished_transcript"] = ready && missingNeverReady;
+        }
+        finally { try { File.Delete(stableFile); } catch (IOException) { } }
+
         bool previousSuppress = CliResolver.SuppressAutoDiscoveryForTest;
         try
         {
@@ -377,6 +404,20 @@ internal static class InputTests
             string? missing = RoutePlanner.FindMissingInstallableEngine(
                 new[] { "pdf" }, "doc", cleanSnap, new[] { "libreoffice" });
             checks["missing_engine_detected_for_selected_format"] = docUnavailable && missing == "libreoffice";
+            // L'Hub elenca i formati che un motore mancante aggiungerebbe alla ruota.
+            var addedByLibreOffice = RoutePlanner.GetFormatsAddedByEngine("libreoffice", cleanSnap);
+            checks["hub_lists_formats_added_by_missing_engine"] = addedByLibreOffice.Contains("DOC", StringComparer.OrdinalIgnoreCase) &&
+                !addedByLibreOffice.Contains("PNG", StringComparer.OrdinalIgnoreCase) &&
+                RoutePlanner.GetFormatsAddedByEngine("no-such-engine", cleanSnap).Count == 0;
+            // Avviso una tantum: un motore mancante utile per il file viene proposto; già proposti tutti, nessun avviso.
+            string[] installable = ["ffmpeg", "pandoc", "libreoffice", "calibre", "whisper"];
+            var suggestion = RoutePlanner.FindEngineAddingFormats(["docx"], cleanSnap, installable, []);
+            var exhausted = RoutePlanner.FindEngineAddingFormats(["docx"], cleanSnap, installable, installable);
+            checks["missing_engine_suggested_once"] = suggestion is { Formats.Count: > 0 } found &&
+                installable.Contains(found.EngineId) && exhausted == null &&
+                RoutePlanner.FindEngineAddingFormats(["docx"], cleanSnap, installable, [found.EngineId])?.EngineId != found.EngineId;
+            checks["suggested_engines_survive_snapshot"] = new FlipSettings { SuggestedEngines = ["libreoffice"] }
+                .CreateSnapshot().SuggestedEngines.SequenceEqual(["libreoffice"]);
         }
         finally { CliResolver.SuppressAutoDiscoveryForTest = previousSuppress; }
     }
@@ -407,6 +448,57 @@ internal static class InputTests
                 nestedEntry = archive.Entries.Any(e => e.FullName.Replace('\\', '/').StartsWith("Cartella/sub/", StringComparison.OrdinalIgnoreCase));
             }
             checks["folder_zip_next_to_folder"] = result.Success && !insideFolder && File.Exists(expected) && nestedEntry;
+
+            // Archiviare una cartella non deve mai cestinare i file che contiene.
+            var recycleSettings = new FlipSettings
+            {
+                OutputDirectoryMode = OutputDirectoryMode.SameAsSource,
+                ConflictPolicy = ConflictPolicy.AutoNumber,
+                ReplaceOriginalToRecycleBin = true
+            };
+            var recycled = new PackZipQuickTool().ExecuteAsync(new QuickToolContext { InputFilePaths = [folder], Settings = recycleSettings })
+                .GetAwaiter().GetResult();
+            checks["folder_zip_never_recycles_contents"] = recycled.Success &&
+                File.Exists(Path.Combine(folder, "a.txt")) && File.Exists(Path.Combine(folder, "sub", "b.txt"));
+
+            // La cartella di output personalizzata prevale sull'archivio "accanto alla cartella".
+            string custom = Path.Combine(root, "Destinazione");
+            Directory.CreateDirectory(custom);
+            var customSettings = new FlipSettings
+            {
+                OutputDirectoryMode = OutputDirectoryMode.CustomFolder,
+                CustomOutputDirectory = custom,
+                ConflictPolicy = ConflictPolicy.AutoNumber
+            };
+            var customResult = new PackZipQuickTool().ExecuteAsync(new QuickToolContext { InputFilePaths = [folder], Settings = customSettings })
+                .GetAwaiter().GetResult();
+            checks["folder_zip_respects_custom_output"] = customResult.Success &&
+                customResult.OutputFilePaths.Count == 1 &&
+                string.Equals(Path.GetDirectoryName(customResult.OutputFilePaths[0]), custom, StringComparison.OrdinalIgnoreCase);
+
+            // Selezioni con cartelle: niente radici di unità né percorsi di rete (rifiutati senza contattare il server).
+            checks["folder_selection_rejects_drive_root"] = Policy.ValidateSelection([Path.GetPathRoot(root)!]).Length == 0;
+            checks["folder_selection_rejects_network"] = Policy.ValidateSelection([@"\\flip-test-server\share\Cartella"]).Length == 0;
+            checks["folder_selection_accepts_local_folder"] = Policy.ValidateSelection([folder]).SequenceEqual([folder]);
+
+            // Un nome duplicato riceve il suffisso restando nella propria sottocartella.
+            // Due cartelle omonime da percorsi diversi producono la stessa entry "Cartella/sub/b.txt".
+            string twin = Path.Combine(root, "altro", "Cartella");
+            Directory.CreateDirectory(Path.Combine(twin, "sub"));
+            File.WriteAllText(Path.Combine(twin, "sub", "b.txt"), "twin");
+            var dup = new PackZipQuickTool().ExecuteAsync(new QuickToolContext
+            {
+                InputFilePaths = [folder, twin],
+                Settings = new FlipSettings { OutputDirectoryMode = OutputDirectoryMode.SameAsSource, ConflictPolicy = ConflictPolicy.AutoNumber }
+            }).GetAwaiter().GetResult();
+            bool keepsSubfolder = false;
+            if (dup.Success && dup.OutputFilePaths.Count == 1)
+            {
+                using var archive = System.IO.Compression.ZipFile.OpenRead(dup.OutputFilePaths[0]);
+                var names = archive.Entries.Select(e => e.FullName.Replace('\\', '/')).ToArray();
+                keepsSubfolder = names.Contains("Cartella/sub/b.txt") && names.Contains("Cartella/sub/b_1.txt");
+            }
+            checks["zip_entries_keep_subfolders"] = keepsSubfolder;
         }
         catch (Exception ex)
         {

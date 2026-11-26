@@ -82,8 +82,11 @@ public static class OutputPathAllocator
 
         internal string GetDirectory(string source, string? directoryOverride = null)
         {
-            if (directoryOverride != null) return directoryOverride;
+            // La cartella personalizzata scelta dall'utente prevale sempre; l'override (archivio accanto
+            // a una cartella) sostituisce solo la cartella del sorgente, senza sottocartella di batch.
             if (customDirectory != null) return customDirectory;
+            if (directoryOverride != null)
+                return IsTransientStagingDirectory(directoryOverride) ? GetDownloadsFallbackDirectory() : directoryOverride;
             string directory = Path.GetDirectoryName(source)!;
             if (IsTransientStagingDirectory(directory))
                 return GetDownloadsFallbackDirectory();

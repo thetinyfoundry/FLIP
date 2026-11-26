@@ -1360,10 +1360,39 @@ public sealed class LocalAiEngine : IConversionEngine
             "-pp"
         };
 
-        var (exitCode, stdout, stderr) = await CliResolver.RunProcessAsync(
-            exe, args, Path.GetDirectoryName(exe), context.CancellationToken, timeoutSeconds: 3600, context.Progress).ConfigureAwait(false);
+        // whisper-cli scrive la trascrizione solo alla fine. Su alcuni PC poi non si chiude (resta appeso dopo
+        // "progress = 100%", cioè al 96% della ruota): se il file è completo e fermo da ExitGraceSeconds, lo chiudiamo noi.
+        using var outputWatch = CancellationTokenSource.CreateLinkedTokenSource(context.CancellationToken);
+        bool outputReady = false;
+        var watcher = Task.Run(async () =>
+        {
+            if (await WaitForStableOutputAsync(() => FindWhisperOutput(tempDir, outPrefix, outFormat),
+                    TimeSpan.FromSeconds(ExitGraceSeconds), outputWatch.Token).ConfigureAwait(false))
+            {
+                outputReady = true;
+                outputWatch.Cancel();
+            }
+        });
 
-        context.Progress?.Report(0.92);
+        int exitCode;
+        string stdout, stderr;
+        try
+        {
+            (exitCode, stdout, stderr) = await CliResolver.RunProcessAsync(
+                exe, args, Path.GetDirectoryName(exe), outputWatch.Token, timeoutSeconds: 3600, context.Progress).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException) when (outputReady && !context.CancellationToken.IsCancellationRequested)
+        {
+            Evidence.Log("whisper.exit.hang", new { ExitGraceSeconds });
+            (exitCode, stdout, stderr) = (0, "", "");
+        }
+        finally
+        {
+            outputWatch.Cancel();
+            try { await watcher.ConfigureAwait(false); } catch (OperationCanceledException) { }
+        }
+
+        context.Progress?.Report(0.97);
         string? produced = FindWhisperOutput(tempDir, outPrefix, outFormat);
         if (exitCode == 0 && (produced is null || new FileInfo(produced).Length == 0))
             return (null, Loc.T("Nessun parlato riconosciuto nell'audio.", "No speech was recognised in the audio."));
@@ -1373,6 +1402,38 @@ public sealed class LocalAiEngine : IConversionEngine
             return (null, $"Errore Whisper AI (exit {exitCode}): {Tail(err)}");
         }
         return (produced, "");
+    }
+
+    /// <summary>Secondi di attesa dopo che la trascrizione è stata scritta, prima di chiudere un whisper-cli rimasto appeso.</summary>
+    internal const int ExitGraceSeconds = 15;
+
+    /// <summary>
+    /// True quando il file restituito da <paramref name="findOutput"/> esiste, non è vuoto e la sua dimensione
+    /// resta invariata per <paramref name="grace"/>. False se l'attesa viene annullata (processo chiuso normalmente).
+    /// </summary>
+    internal static async Task<bool> WaitForStableOutputAsync(Func<string?> findOutput, TimeSpan grace,
+        CancellationToken token, TimeSpan? pollInterval = null)
+    {
+        var poll = pollInterval ?? TimeSpan.FromSeconds(1);
+        long lastSize = -1;
+        var stableSince = DateTime.MinValue;
+        while (!token.IsCancellationRequested)
+        {
+            try { await Task.Delay(poll, token).ConfigureAwait(false); }
+            catch (OperationCanceledException) { return false; }
+            long size;
+            try { size = findOutput() is { } file ? new FileInfo(file).Length : -1; }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { size = -1; }
+
+            if (size > 0 && size == lastSize)
+            {
+                if (stableSince == DateTime.MinValue) stableSince = DateTime.UtcNow;
+                if (DateTime.UtcNow - stableSince >= grace) return true;
+            }
+            else stableSince = DateTime.MinValue;
+            lastSize = size;
+        }
+        return false;
     }
 
     /// <summary>Nome base sicuro (ASCII, senza estensione) per -of: whisper-cli su Windows non gestisce bene i percorsi Unicode.</summary>

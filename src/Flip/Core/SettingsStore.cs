@@ -119,6 +119,7 @@ public sealed class SettingsStore
         {
             imported.CustomEnginePaths = new(_settings.CustomEnginePaths, StringComparer.OrdinalIgnoreCase);
             imported.RecentConversions = [.. _settings.RecentConversions];
+            imported.SuggestedEngines = [.. _settings.SuggestedEngines];
             imported.WatchFolders = imported.WatchFolders.Where(rule => rule is not null && !Policy.IsNetworkPath(rule.FolderPath)).ToList();
             foreach (var rule in imported.WatchFolders.Where(rule => rule.Enabled))
             {

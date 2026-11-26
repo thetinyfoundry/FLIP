@@ -26,7 +26,9 @@ public sealed class PdfEngine : IConversionEngine
     private static readonly string[] PdfToTextFormats = ["txt", "md", "html", "json", "docx", "odt", "rtf"];
     // Formati che possono diventare PDF
     private static readonly string[] ImageToPdfFormats = ["png", "jpg", "jpeg", "webp", "bmp"];
-    private static readonly string[] TextToPdfFormats = ["txt", "md", "html", "rtf", "docx", "odt", "xlsx", "csv", "tsv", "json", "yaml", "xml"];
+    private static readonly string[] TextToPdfFormats = ["txt", "md", "html", "rtf", "docx", "odt", "xlsx", "xlsm", "xltx", "xls", "ods", "csv", "tsv", "json", "yaml", "xml"];
+    // Fogli di calcolo e tabelle: diventano tabelle PDF, non testo.
+    private static readonly string[] SheetFormats = ["xlsx", "xlsm", "xltx", "xls", "ods", "csv", "tsv"];
 
     public PdfEngine()
     {
@@ -113,7 +115,7 @@ public sealed class PdfEngine : IConversionEngine
                     string tempPdf = dstPath + ".base.tmp.pdf";
                     try
                     {
-                        TextToPdf(srcPath, tempPdf, srcExt, stripMetadata);
+                        TextToPdf(srcPath, tempPdf, srcExt, stripMetadata, context.CancellationToken);
                         ConvertToPdfA2b(tempPdf, dstPath, stripMetadata);
                     }
                     finally
@@ -136,7 +138,7 @@ public sealed class PdfEngine : IConversionEngine
             }
             else if (TextToPdfFormats.Contains(srcExt) && dstExt == "pdf")
             {
-                TextToPdf(srcPath, dstPath, srcExt, stripMetadata);
+                TextToPdf(srcPath, dstPath, srcExt, stripMetadata, context.CancellationToken);
             }
             else
             {
@@ -164,20 +166,19 @@ public sealed class PdfEngine : IConversionEngine
     {
         return Task.Run(() =>
         {
-            using var pdf = File.OpenRead(pdfPath);
-            int pageCount = PDFtoImage.Conversion.GetPageCount(pdf, leaveOpen: true);
+            byte[] pdf = File.ReadAllBytes(pdfPath);
+            int pageCount = PDFtoImage.Conversion.GetPageCount(pdf);
             if (pageCount == 0) throw new IOException("PDF senza pagine.");
             if (pageCount > 200) throw new IOException("PDF oltre il limite di 200 pagine.");
-            pdf.Position = 0;
 
-            var options = new PDFtoImage.RenderOptions(Dpi: 150, Width: 1800, Height: 2400, WithAspectRatio: true);
+            var options = PdfPages.RenderOptions(pdf);
             int quality = 92;
             if (ctx.CustomParameters.TryGetValue("quality", out var qStr) && int.TryParse(qStr, out int qVal))
                 quality = Math.Clamp(qVal, 1, 100);
 
             var outputs = new string[pageCount];
             long totalBytes = 0;
-            using var pages = PDFtoImage.Conversion.ToImages(pdf, leaveOpen: true, options: options).GetEnumerator();
+            using var pages = PDFtoImage.Conversion.ToImages(pdf, options: options).GetEnumerator();
             for (int i = 0; i < pageCount; i++)
             {
                 ctx.CancellationToken.ThrowIfCancellationRequested();
@@ -256,8 +257,8 @@ public sealed class PdfEngine : IConversionEngine
         string output = textFormat switch
         {
             "txt" => fullText,
-            "md" => $"# Documento estratto da PDF\n\n{fullText}",
-            "html" => $"<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>PDF</title></head><body><pre>{System.Net.WebUtility.HtmlEncode(fullText)}</pre></body></html>",
+            "md" => fullText,
+            "html" => $"<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>{System.Net.WebUtility.HtmlEncode(Path.GetFileNameWithoutExtension(pdfPath))}</title></head><body><pre>{System.Net.WebUtility.HtmlEncode(fullText)}</pre></body></html>",
             "json" => SerializePdfTextToJson(pdf, fullText),
             _ => fullText
         };
@@ -270,7 +271,7 @@ public sealed class PdfEngine : IConversionEngine
         var sb = new StringBuilder();
         sb.AppendLine("{");
         sb.AppendLine($"  \"pageCount\": {pdf.NumberOfPages},");
-        sb.AppendLine($"  \"text\": {System.Text.Json.JsonSerializer.Serialize(fullText)}");
+        sb.AppendLine($"  \"text\": {System.Text.Json.JsonSerializer.Serialize(fullText, TextFiles.ReadableJsonLine)}");
         sb.AppendLine("}");
         return sb.ToString();
     }
@@ -301,20 +302,8 @@ public sealed class PdfEngine : IConversionEngine
         stream.Flush(true);
     }
 
-    private static SKBitmap LoadSkiaBitmap(string path)
-    {
-        byte[] bytes = File.ReadAllBytes(path);
-        using var data = SKData.CreateCopy(bytes);
-        using var codec = SKCodec.Create(data);
-        if (codec == null) throw new IOException("Formato immagine non decodificabile.");
-        if ((long)codec.Info.Width * codec.Info.Height > 60_000_000)
-            throw new IOException("Immagine oltre il limite di 60 megapixel.");
-
-        var bitmap = new SKBitmap(new SKImageInfo(codec.Info.Width, codec.Info.Height, SKColorType.Bgra8888, SKAlphaType.Premul));
-        var result = codec.GetPixels(bitmap.Info, bitmap.GetPixels());
-        if (result != SKCodecResult.Success) { bitmap.Dispose(); throw new IOException($"Immagine corrotta: {result}"); }
-        return bitmap;
-    }
+    // Con l'orientamento EXIF: le foto del telefono finirebbero coricate nel PDF.
+    private static SKBitmap LoadSkiaBitmap(string path) => ImageEngine.LoadBitmap(path);
 
     private static SKDocumentPdfMetadata EmptyPdfMetadata() => new()
     {
@@ -328,8 +317,16 @@ public sealed class PdfEngine : IConversionEngine
 
     // ── Testo & Documenti Ricchi -> PDF ───────────────────────────────────────
 
-    private static void TextToPdf(string textPath, string pdfPath, string srcExt = "txt", bool stripMetadata = false)
+    private static void TextToPdf(string textPath, string pdfPath, string srcExt, bool stripMetadata, CancellationToken token)
     {
+        if (SheetFormats.Contains(srcExt))
+        {
+            if (new FileInfo(textPath).Length > 100 * 1024 * 1024)
+                throw new IOException("Foglio di calcolo oltre il limite di 100 MiB.");
+            SpreadsheetPdf.Write(SpreadsheetReader.Read(textPath), pdfPath,
+                stripMetadata ? EmptyPdfMetadata() : new SKDocumentPdfMetadata { Creator = "FLIP", Producer = "FLIP PDF Engine" }, token);
+            return;
+        }
         if (new FileInfo(textPath).Length > 10 * 1024 * 1024)
             throw new IOException("File testo troppo grande per la conversione PDF (limite 10 MiB).");
 

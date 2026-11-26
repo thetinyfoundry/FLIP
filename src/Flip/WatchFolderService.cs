@@ -27,6 +27,11 @@ public sealed class WatchFolderService : IDisposable
     private readonly SemaphoreSlim _concurrencySemaphore = new(Math.Max(2, Environment.ProcessorCount / 2));
     private readonly CancellationTokenSource _cts = new();
     private bool _disposed;
+    private string? _activeRules;
+
+    /// <summary>True mentre una conversione automatica è in corso: l'aggiornamento dell'app deve aspettarla.</summary>
+    public bool IsConverting => Volatile.Read(ref _converting) > 0;
+    private int _converting;
 
     /// <summary>Notificato al completamento dell'elaborazione di un file (utile per log e test).</summary>
     public event Action<string, string, bool>? FileProcessed;
@@ -61,54 +66,66 @@ public sealed class WatchFolderService : IDisposable
         if (_disposed) return;
         lock (_sync)
         {
-            foreach (var w in _watchers)
+            var active = snapshot.CreateSnapshot().WatchFolders.Where(rule => rule.Enabled &&
+                !string.IsNullOrWhiteSpace(rule.FolderPath) &&
+                !string.IsNullOrWhiteSpace(rule.TargetExtension) &&
+                Directory.Exists(rule.FolderPath)).ToList();
+
+            // Ogni conversione salva la cronologia: ricreare gli osservatori a ogni salvataggio farebbe perdere file.
+            string signature = System.Text.Json.JsonSerializer.Serialize(active);
+            if (signature == _activeRules) return;
+            _activeRules = signature;
+            DisposeWatchers();
+
+            // Un solo osservatore per cartella: più regole sullo stesso file devono essere eseguite tutte.
+            foreach (var folder in active.GroupBy(rule => Path.TrimEndingDirectorySeparator(Path.GetFullPath(rule.FolderPath)), StringComparer.OrdinalIgnoreCase))
             {
                 try
                 {
-                    w.EnableRaisingEvents = false;
-                    w.Dispose();
-                }
-                catch { }
-            }
-            _watchers.Clear();
-
-            if (snapshot.WatchFolders == null || snapshot.WatchFolders.Count == 0) return;
-
-            foreach (var rule in snapshot.WatchFolders)
-            {
-                if (!rule.Enabled ||
-                    string.IsNullOrWhiteSpace(rule.FolderPath) ||
-                    string.IsNullOrWhiteSpace(rule.TargetExtension) ||
-                    !Directory.Exists(rule.FolderPath))
-                {
-                    continue;
-                }
-
-                try
-                {
-                    var watcher = new FileSystemWatcher(rule.FolderPath)
+                    var watcher = new FileSystemWatcher(folder.Key)
                     {
                         IncludeSubdirectories = false,
+                        InternalBufferSize = 64 * 1024,
                         NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.Size | NotifyFilters.CreationTime
                     };
 
-                    var currentRule = rule.Copy();
-                    watcher.Created += (_, e) => OnFileEvent(currentRule, e.FullPath);
-                    watcher.Changed += (_, e) => OnFileEvent(currentRule, e.FullPath);
-                    watcher.Renamed += (_, e) => OnFileEvent(currentRule, e.FullPath);
+                    // Le regole che spostano l'originale nel Cestino vanno per ultime.
+                    var rules = folder.Select(rule => rule.Copy()).OrderBy(rule => rule.DeleteSourceToRecycleBin).ToArray();
+                    watcher.Created += (_, e) => OnFileEvent(rules, e.FullPath);
+                    watcher.Changed += (_, e) => OnFileEvent(rules, e.FullPath);
+                    watcher.Renamed += (_, e) => OnFileEvent(rules, e.FullPath);
+                    watcher.Error += (_, e) =>
+                    {
+                        Evidence.Log("watchfolder.watcher.error", new { folder = folder.Key, e.GetException().Message });
+                        lock (_sync) _activeRules = null;
+                    };
                     watcher.EnableRaisingEvents = true;
 
                     _watchers.Add(watcher);
                 }
                 catch (Exception ex)
                 {
-                    Evidence.Log("watchfolder.init.error", new { rule.FolderPath, ex.Message });
+                    Evidence.Log("watchfolder.init.error", new { folder = folder.Key, ex.Message });
                 }
             }
         }
     }
 
-    private void OnFileEvent(WatchFolderRule rule, string fullPath)
+    private void DisposeWatchers()
+    {
+        foreach (var watcher in _watchers)
+        {
+            try
+            {
+                watcher.EnableRaisingEvents = false;
+                watcher.Dispose();
+            }
+            catch (Exception ex) { Evidence.Log("watchfolder.dispose.error", ex.Message); }
+        }
+        _watchers.Clear();
+    }
+
+    private void OnFileEvent(WatchFolderRule[] folderRules, string fullPath)
     {
         if (_disposed) return;
         try
@@ -119,7 +136,8 @@ public sealed class WatchFolderService : IDisposable
             if (IsGeneratedOutput(normalized)) return;
 
             // Verifica estensione e filtri
-            if (!MatchesRule(rule, normalized)) return;
+            var rules = folderRules.Where(rule => MatchesRule(rule, normalized)).ToArray();
+            if (rules.Length == 0) return;
 
             // Anti-loop Check B: deduplica eventi concorrenti sullo stesso file
             if (!_inFlightFiles.TryAdd(normalized, 0)) return;
@@ -128,8 +146,20 @@ public sealed class WatchFolderService : IDisposable
             {
                 try
                 {
-                    await ProcessFileAsync(rule, normalized).ConfigureAwait(false);
+                    for (int i = 0; i < rules.Length; i++)
+                    {
+                        var rule = rules[i];
+                        // Solo l'ultima regola può togliere l'originale, che serve a tutte le altre.
+                        if (i < rules.Length - 1 && rule.DeleteSourceToRecycleBin)
+                        {
+                            rule = rule.Copy();
+                            rule.DeleteSourceToRecycleBin = false;
+                        }
+                        await ProcessFileAsync(rule, normalized, keepSource: i < rules.Length - 1).ConfigureAwait(false);
+                    }
                 }
+                catch (OperationCanceledException) { }
+                catch (ObjectDisposedException) { }
                 finally
                 {
                     await Task.Delay(400).ConfigureAwait(false);
@@ -143,7 +173,7 @@ public sealed class WatchFolderService : IDisposable
         }
     }
 
-    private async Task ProcessFileAsync(WatchFolderRule rule, string filePath)
+    private async Task ProcessFileAsync(WatchFolderRule rule, string filePath, bool keepSource)
     {
         if (_disposed) return;
 
@@ -155,13 +185,14 @@ public sealed class WatchFolderService : IDisposable
         if (IsGeneratedOutput(filePath)) return;
 
         await _concurrencySemaphore.WaitAsync(_cts.Token).ConfigureAwait(false);
+        Interlocked.Increment(ref _converting);
         try
         {
             var snapshot = _initialSettings?.CreateSnapshot() ?? _store?.CreateSnapshot() ?? new FlipSettings().CreateSnapshot();
-            if (rule.DeleteSourceToRecycleBin)
+            if (rule.DeleteSourceToRecycleBin || keepSource)
             {
                 var mutable = snapshot.CreateMutableCopy();
-                mutable.ReplaceOriginalToRecycleBin = true;
+                mutable.ReplaceOriginalToRecycleBin = !keepSource;
                 snapshot = mutable.CreateSnapshot();
             }
 
@@ -209,7 +240,9 @@ public sealed class WatchFolderService : IDisposable
         }
         finally
         {
-            _concurrencySemaphore.Release();
+            Interlocked.Decrement(ref _converting);
+            try { _concurrencySemaphore.Release(); }
+            catch (ObjectDisposedException) { }
         }
     }
 
@@ -219,10 +252,14 @@ public sealed class WatchFolderService : IDisposable
     /// </summary>
     public static async Task<bool> WaitForFileReadyAsync(string filePath, CancellationToken ct = default)
     {
-        var deadline = DateTime.UtcNow.AddSeconds(15);
+        // Una copia o un download lungo continua finché il file cresce o resta occupato.
+        var idleLimit = TimeSpan.FromSeconds(15);
+        var lockedLimit = DateTime.UtcNow.AddMinutes(30);
+        var deadline = DateTime.UtcNow + idleLimit;
         long lastSize = -1;
+        long seenSize = -1;
 
-        while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
+        while (DateTime.UtcNow < deadline && DateTime.UtcNow < lockedLimit && !ct.IsCancellationRequested)
         {
             try
             {
@@ -230,10 +267,16 @@ public sealed class WatchFolderService : IDisposable
                 {
                     var fi = new FileInfo(filePath);
                     long currentSize = fi.Length;
+                    if (currentSize != seenSize)
+                    {
+                        seenSize = currentSize;
+                        deadline = DateTime.UtcNow + idleLimit;
+                    }
 
                     if (currentSize > 0)
                     {
-                        using var stream = File.Open(filePath, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+                        // La sola lettura basta a scoprire chi sta scrivendo e funziona con i file di sola lettura.
+                        using var stream = File.Open(filePath, FileMode.Open, FileAccess.Read, FileShare.Read);
                         if (currentSize == lastSize)
                         {
                             return true; // Dimensione stabile e nessun lock attivo
@@ -242,9 +285,14 @@ public sealed class WatchFolderService : IDisposable
                     }
                 }
             }
-            catch (IOException)
+            catch (IOException ex) when (ex is not FileNotFoundException)
             {
                 // File ancora bloccato in scrittura da un altro processo
+                deadline = DateTime.UtcNow + idleLimit;
+            }
+            catch (IOException)
+            {
+                // File spostato o rinominato fra il controllo e l'apertura
             }
             catch (UnauthorizedAccessException)
             {
@@ -364,16 +412,7 @@ public sealed class WatchFolderService : IDisposable
 
         lock (_sync)
         {
-            foreach (var w in _watchers)
-            {
-                try
-                {
-                    w.EnableRaisingEvents = false;
-                    w.Dispose();
-                }
-                catch { }
-            }
-            _watchers.Clear();
+            DisposeWatchers();
         }
 
         _concurrencySemaphore.Dispose();

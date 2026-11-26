@@ -44,7 +44,7 @@ try{
     if($SkipPublish){Write-Host 'Verifica completata (publish saltato).' -ForegroundColor Green; return}
 
     Write-Host '== 4/4 Publish e riavvio ==' -ForegroundColor Cyan
-    Get-Process Flip -ErrorAction SilentlyContinue | ForEach-Object { $_.CloseMainWindow() | Out-Null; if(!$_.WaitForExit(3000)){ $_ | Stop-Process -Force } }
+    if(Get-Process Flip -ErrorAction SilentlyContinue){throw 'Esci da FLIP dall''icona vicino all''orologio, poi riprova.'}
     & dotnet publish $project -c Release -r win-x64 --self-contained false -o $target
     if($LASTEXITCODE -ne 0){throw 'Publish fallito.'}
     Start-Process -FilePath (Join-Path $target 'Flip.exe') -ArgumentList '--ui'

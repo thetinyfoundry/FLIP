@@ -11,8 +11,8 @@ internal sealed record ReleaseInfo(string TagName, string Name, string HtmlUrl, 
 
 internal static class UpdateChecker
 {
-    const string ReleasesApi = "https://api.github.com/repos/thetinyfoundry/FLIP/releases?per_page=1";
-    const string TagsApi = "https://api.github.com/repos/thetinyfoundry/FLIP/tags?per_page=1";
+    const string LatestReleaseApi = "https://api.github.com/repos/thetinyfoundry/FLIP/releases/latest";
+    internal const string SupportUrl = "https://buymeacoffee.com/1berimhy9m";
     internal const string ReleasesPageUrl = "https://github.com/thetinyfoundry/FLIP/releases";
 
     internal static string CurrentVersion
@@ -39,46 +39,19 @@ internal static class UpdateChecker
         string name = "";
         string url = ReleasesPageUrl;
 
-        // Try releases endpoint first
-        try
+        // Stessa fonte della scheda Aggiornamenti: solo l'ultima release stabile.
+        using (var response = await client.GetAsync(LatestReleaseApi, token))
         {
-            using var response = await client.GetAsync(ReleasesApi, token);
-            if (response.IsSuccessStatusCode)
-            {
-                string json = await response.Content.ReadAsStringAsync(token);
-                using var doc = JsonDocument.Parse(json);
-                if (doc.RootElement.ValueKind == JsonValueKind.Array && doc.RootElement.GetArrayLength() > 0)
-                {
-                    var item = doc.RootElement[0];
-                    tag = item.TryGetProperty("tag_name", out var t) ? (t.GetString() ?? "") : "";
-                    name = item.TryGetProperty("name", out var n) ? (n.GetString() ?? tag) : tag;
-                    url = item.TryGetProperty("html_url", out var u) ? (u.GetString() ?? ReleasesPageUrl) : ReleasesPageUrl;
-                }
-            }
-        }
-        catch
-        {
-            // Fallback to tags endpoint below
-        }
-
-        // If releases didn't return a tag, try tags endpoint
-        if (string.IsNullOrEmpty(tag))
-        {
-            using var response = await client.GetAsync(TagsApi, token);
             response.EnsureSuccessStatusCode();
-            string json = await response.Content.ReadAsStringAsync(token);
-            using var doc = JsonDocument.Parse(json);
-            if (doc.RootElement.ValueKind == JsonValueKind.Array && doc.RootElement.GetArrayLength() > 0)
-            {
-                var item = doc.RootElement[0];
-                tag = item.TryGetProperty("name", out var n) ? (n.GetString() ?? "") : "";
-                name = tag;
-                url = $"{ReleasesPageUrl}/tag/{tag}";
-            }
+            using var doc = JsonDocument.Parse(await response.Content.ReadAsStringAsync(token));
+            var item = doc.RootElement;
+            tag = item.TryGetProperty("tag_name", out var t) ? (t.GetString() ?? "") : "";
+            name = item.TryGetProperty("name", out var n) ? (n.GetString() ?? tag) : tag;
+            url = item.TryGetProperty("html_url", out var u) ? (u.GetString() ?? ReleasesPageUrl) : ReleasesPageUrl;
         }
 
         if (string.IsNullOrEmpty(tag))
-            throw new IOException("Nessuna release o tag trovato su GitHub.");
+            throw new IOException("Nessuna release trovata su GitHub.");
 
         string current = CurrentVersion;
         bool isNewer = IsRemoteNewer(current, tag);
@@ -108,7 +81,7 @@ internal static class UpdateChecker
 
     internal static void OpenBrowser(string url)
     {
-        if (!url.StartsWith("https://github.com/", StringComparison.OrdinalIgnoreCase)) return;
-        Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        if (!url.StartsWith("https://github.com/", StringComparison.OrdinalIgnoreCase) && url != SupportUrl) return;
+        Process.Start(new ProcessStartInfo(url) { UseShellExecute = true })?.Dispose();
     }
 }

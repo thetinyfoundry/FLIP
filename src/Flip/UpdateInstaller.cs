@@ -129,6 +129,8 @@ internal static class UpdateInstaller
     /// <summary>Null when this copy of FLIP can update itself, otherwise the reason it cannot.</summary>
     internal static string? SelfUpdateBlockReason()
     {
+        if (StoreEdition.IsPackaged)
+            return Loc.T("Questa versione si aggiorna da Microsoft Store.", "This version is updated by the Microsoft Store.");
         string baseDir = AppContext.BaseDirectory;
         if (baseDir.Contains(@"\bin\Debug\", StringComparison.OrdinalIgnoreCase) ||
             baseDir.Contains(@"\bin\Release\", StringComparison.OrdinalIgnoreCase))

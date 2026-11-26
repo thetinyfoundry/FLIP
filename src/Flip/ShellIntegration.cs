@@ -10,6 +10,7 @@ internal static class ShellIntegration
     {
         get
         {
+            if (StoreEdition.IsPackaged) return StoreEdition.ContextMenuEnabled;
             try
             {
                 using var existing = Registry.CurrentUser.OpenSubKey(Key);
@@ -20,6 +21,7 @@ internal static class ShellIntegration
     }
     internal static void Apply(bool remove)
     {
+        if (StoreEdition.IsPackaged) { StoreEdition.ContextMenuEnabled = !remove; return; }
         string exe = Environment.ProcessPath ?? throw new IOException(Loc.T("Percorso eseguibile assente.", "Executable path unavailable."));
         if (!Path.GetFileName(exe).Equals("Flip.exe", StringComparison.OrdinalIgnoreCase))
             throw new IOException(Loc.T("Usare Flip.exe, non dotnet Flip.dll, per configurare il menu.", "Use Flip.exe, not dotnet Flip.dll, to configure the context menu."));

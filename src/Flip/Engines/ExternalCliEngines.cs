@@ -39,7 +39,6 @@ public static class CliResolver
         if (string.IsNullOrWhiteSpace(engineId)) return null;
         engineId = engineId.Trim().ToLowerInvariant();
         if (!KnownEngines.TryGetValue(engineId, out var engine)) return null;
-
         var paths = (settings ?? SettingsStore.Current.CreateSnapshot()).CustomEnginePaths;
         if (paths.TryGetValue(engineId, out var configuredPath) && !string.IsNullOrWhiteSpace(configuredPath))
         {
@@ -60,6 +59,8 @@ public static class CliResolver
         }
 
         if (SuppressAutoDiscoveryForTest) return null;
+        // Il motore incluso precede quelli trovati sul PC, ma non quello scelto dall'utente.
+        if (StoreEdition.BundledEngine(engineId) is { } bundled) return bundled;
 
         if (engineId == "whisper")
         {
@@ -97,6 +98,8 @@ public static class CliResolver
 
         foreach (string engineId in KnownEngines.Keys)
         {
+            // Il percorso del pacchetto cambia a ogni aggiornamento: non va salvato.
+            if (StoreEdition.BundledEngine(engineId) != null) continue;
             current.TryGetValue(engineId, out string? existing);
             string expanded = string.IsNullOrWhiteSpace(existing)
                 ? ""
@@ -189,6 +192,8 @@ public static class CliResolver
             string managed = Path.Combine(SettingsStore.DataDirectory, "Engines");
             yield return Path.Combine(managed, engineId);
             yield return managed;
+            // L'edizione Store riusa i motori già scaricati dalla versione GitHub.
+            if (StoreEdition.GitHubEngines is { } shared) yield return Path.Combine(shared, engineId);
         }
 
         if (!string.IsNullOrWhiteSpace(local))
@@ -288,9 +293,18 @@ public static class CliResolver
         string? workingDirectory = null,
         CancellationToken cancellationToken = default,
         int timeoutSeconds = 600,
-        IProgress<double>? progress = null)
+        IProgress<double>? progress = null,
+        bool idleTimeout = false,
+        Func<string, bool>? onLine = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(executable);
+        using var timeoutCts = new CancellationTokenSource();
+        void KeepAlive()
+        {
+            if (!idleTimeout) return;
+            try { timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds)); }
+            catch (ObjectDisposedException) { }
+        }
 
         var startInfo = new ProcessStartInfo(executable)
         {
@@ -330,6 +344,8 @@ public static class CliResolver
         {
             if (e.Data != null)
             {
+                KeepAlive();
+                if (onLine?.Invoke(e.Data) == true) return;
                 stdoutBuilder.AppendLine(e.Data);
                 TryReportProgressFromLine(e.Data);
             }
@@ -338,6 +354,7 @@ public static class CliResolver
         {
             if (e.Data != null)
             {
+                KeepAlive();
                 stderrBuilder.AppendLine(e.Data);
                 TryReportProgressFromLine(e.Data);
             }
@@ -353,7 +370,7 @@ public static class CliResolver
         process.BeginOutputReadLine();
         process.BeginErrorReadLine();
 
-        using var timeoutCts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
+        timeoutCts.CancelAfter(TimeSpan.FromSeconds(timeoutSeconds));
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
         try
@@ -447,11 +464,15 @@ public sealed class FfmpegEngine : IConversionEngine
         "m4v", "3gp", "vob", "ogv", "mpg", "mpeg", "asf", "f4v", "rmvb", "divx", "xvid", "hevc"
     ];
 
+    // MIDI contiene note, non suono: FFmpeg non può leggerlo né scriverlo.
     private static readonly string[] AudioFormats =
     [
         "mp3", "wav", "flac", "aac", "m4a", "ogg", "opus", "wma", "aiff", "alac",
-        "ac3", "eac3", "dts", "mp2", "mka", "amr", "mid", "midi", "ape", "wv", "ra", "voc", "au", "caf"
+        "ac3", "eac3", "dts", "mp2", "mka", "amr", "wv", "ra", "voc", "au", "caf"
     ];
+
+    // Formati che FFmpeg legge ma per cui non esiste un codificatore.
+    private static readonly string[] AudioInputOnly = ["ape"];
 
     private static readonly string[] SubtitleFormats = ["srt", "vtt", "ass"];
 
@@ -469,7 +490,7 @@ public sealed class FfmpegEngine : IConversionEngine
                 _supportedEdges.Add(new ConversionEdge(src, dst, Id, 8));
 
         // Audio ↔ Audio
-        foreach (var src in AudioFormats)
+        foreach (var src in AudioFormats.Concat(AudioInputOnly))
             foreach (var dst in AudioFormats)
                 if (src != dst)
                     _supportedEdges.Add(new ConversionEdge(src, dst, Id, 10));
@@ -515,10 +536,20 @@ public sealed class FfmpegEngine : IConversionEngine
 
             context.Progress?.Report(0.10);
 
-            var args = BuildFfmpegArgs(srcPath, dstPath, srcExt, dstExt, context);
+            double? duration = await ProbeDurationAsync(exe, srcPath, context.CancellationToken).ConfigureAwait(false);
+            var acceleration = context.Settings.HardwareAcceleration;
+            var (exitCode, stdout, stderr) = await RunAsync(acceleration).ConfigureAwait(false);
+            // Codificatore della scheda video assente o occupato: la conversione deve riuscire comunque.
+            if (exitCode != 0 && acceleration is HardwareAcceleration.Nvenc or HardwareAcceleration.Amf or HardwareAcceleration.Qsv)
+                (exitCode, stdout, stderr) = await RunAsync(HardwareAcceleration.CpuOnly).ConfigureAwait(false);
 
-            var (exitCode, stdout, stderr) = await CliResolver.RunProcessAsync(
-                exe, args, Path.GetDirectoryName(dstPath), context.CancellationToken, timeoutSeconds: 1200, context.Progress);
+            Task<(int, string, string)> RunAsync(HardwareAcceleration hardware)
+            {
+                var args = BuildFfmpegArgs(srcPath, dstPath, srcExt, dstExt, context, hardware, duration);
+                // Un film può richiedere ore: conta solo se FFmpeg smette di dare segni di vita.
+                return CliResolver.RunProcessAsync(exe, args, Path.GetDirectoryName(dstPath), context.CancellationToken,
+                    timeoutSeconds: 1200, context.Progress, idleTimeout: true, onLine: line => ReportProgress(line, duration, context.Progress));
+            }
 
             if (exitCode != 0)
             {
@@ -543,30 +574,52 @@ public sealed class FfmpegEngine : IConversionEngine
         }
     }
 
-    private static List<string> BuildFfmpegArgs(string src, string dst, string srcExt, string dstExt, ConversionContext ctx)
-    {
-        var args = new List<string> { "-y", "-i", src };
+    private static readonly Regex DurationRegex = new(@"Duration:\s*(\d+):(\d{2}):(\d{2}(?:\.\d+)?)", RegexOptions.CultureInvariant);
 
-        bool isSrcVideo = VideoFormats.Contains(srcExt);
+    /// <summary>Durata dichiarata dal file, letta con FFmpeg perché ffprobe può mancare.</summary>
+    internal static async Task<double?> ProbeDurationAsync(string exe, string source, CancellationToken token)
+    {
+        var (_, _, stderr) = await CliResolver.RunProcessAsync(exe, ["-hide_banner", "-nostdin", "-i", source], null, token, timeoutSeconds: 60).ConfigureAwait(false);
+        var match = DurationRegex.Match(stderr);
+        if (!match.Success) return null;
+        double seconds = int.Parse(match.Groups[1].Value, CultureInfo.InvariantCulture) * 3600.0 +
+            int.Parse(match.Groups[2].Value, CultureInfo.InvariantCulture) * 60.0 +
+            double.Parse(match.Groups[3].Value, CultureInfo.InvariantCulture);
+        return seconds > 0.04 ? seconds : null;
+    }
+
+    /// <summary>Righe key=value di -progress: aggiornano la percentuale e non vanno conservate in memoria.</summary>
+    private static bool ReportProgress(string line, double? duration, IProgress<double>? progress)
+    {
+        int equals = line.IndexOf('=');
+        if (equals <= 0 || line.AsSpan(0, equals).ContainsAnyExcept("abcdefghijklmnopqrstuvwxyz_0123456789")) return false;
+        if (duration is > 0 && line.StartsWith("out_time_us=", StringComparison.Ordinal) &&
+            long.TryParse(line.AsSpan(equals + 1), NumberStyles.Integer, CultureInfo.InvariantCulture, out long microseconds) && microseconds > 0)
+            progress?.Report(Math.Clamp(0.10 + 0.86 * microseconds / 1e6 / duration.Value, 0.10, 0.96));
+        return true;
+    }
+
+    private static List<string> BuildFfmpegArgs(string src, string dst, string srcExt, string dstExt, ConversionContext ctx,
+        HardwareAcceleration hardware, double? duration)
+    {
+        var args = new List<string> { "-y", "-hide_banner", "-nostdin", "-nostats", "-progress", "pipe:1", "-i", src };
+
         bool isDstVideo = VideoFormats.Contains(dstExt);
         bool isDstAudio = AudioFormats.Contains(dstExt);
         bool isDstSubtitle = SubtitleFormats.Contains(dstExt);
+        long? videoBitrate = null;
+        long audioBitrate = 128_000;
 
-        // Parametro Target Size in MB
-        if (ctx.CustomParameters.TryGetValue("target_mb", out var mbStr) && double.TryParse(mbStr, NumberStyles.Float, CultureInfo.InvariantCulture, out double targetMb) && targetMb > 0)
+        // Dimensione massima: il bitrate dipende dalla durata reale del video.
+        if (isDstVideo && ctx.CustomParameters.TryGetValue("target_mb", out var mbStr) &&
+            double.TryParse(mbStr, NumberStyles.Float, CultureInfo.InvariantCulture, out double targetMb) && targetMb > 0)
         {
-            // Bitrate target approssimativo (considerando 90% video e 10% audio)
-            long targetBits = (long)(targetMb * 8 * 1024 * 1024);
-            // Durata stimata da parametro opzionale "duration" (in secondi) o fallback 60s
-            double duration = 60.0;
-            if (ctx.CustomParameters.TryGetValue("duration", out var durStr) && double.TryParse(durStr, NumberStyles.Float, CultureInfo.InvariantCulture, out double parsedDur) && parsedDur > 0)
-                duration = parsedDur;
-
-            long totalBitrate = (long)(targetBits / duration);
-            long audioBitrate = Math.Min(128_000, totalBitrate / 8);
-            long videoBitrate = Math.Max(100_000, totalBitrate - audioBitrate);
-
-            args.AddRange(["-b:v", $"{videoBitrate / 1000}k", "-maxrate", $"{videoBitrate / 1000}k", "-bufsize", $"{videoBitrate / 500}k", "-b:a", $"{audioBitrate / 1000}k"]);
+            double seconds = duration ?? throw new IOException(Loc.T("Durata del video non leggibile: impossibile calcolare la dimensione.", "Video duration unavailable: unable to compute the target size."));
+            long total = (long)(targetMb * 8 * 1024 * 1024 / seconds);
+            // Un file già piccolo non deve crescere.
+            total = Math.Min(total, (long)(new FileInfo(src).Length * 8 / seconds));
+            audioBitrate = Math.Clamp(total / 8, 24_000, 128_000);
+            videoBitrate = Math.Max(30_000, total - audioBitrate);
         }
 
         if (isDstAudio)
@@ -580,6 +633,11 @@ public sealed class FfmpegEngine : IConversionEngine
                 case "wav": args.AddRange(["-c:a", "pcm_s16le"]); break;
                 case "ogg": args.AddRange(["-c:a", "libvorbis", "-q:a", "4"]); break;
                 case "opus": args.AddRange(["-c:a", "libopus", "-b:a", "128k"]); break;
+                case "alac": args.AddRange(["-c:a", "alac", "-f", "ipod"]); break;
+                case "dts": args.AddRange(["-c:a", "dca", "-strict", "experimental", "-ar", "48000", "-ac", "2", "-b:a", "768k"]); break;
+                case "amr": args.AddRange(["-c:a", "libopencore_amrnb", "-ar", "8000", "-ac", "1", "-b:a", "12.2k"]); break;
+                case "ra": args.AddRange(["-c:a", "real_144", "-ar", "8000", "-ac", "1", "-f", "rm"]); break;
+                case "voc": args.AddRange(["-c:a", "pcm_s16le"]); break;
             }
         }
         else if (isDstSubtitle)
@@ -598,8 +656,7 @@ public sealed class FfmpegEngine : IConversionEngine
             }
             else
             {
-                // Applica accelerazione hardware configurata
-                ApplyHardwareAcceleration(args, dstExt, ctx.Settings.HardwareAcceleration);
+                ApplyVideoCodec(args, dstExt, hardware, videoBitrate, audioBitrate);
             }
         }
 
@@ -613,34 +670,52 @@ public sealed class FfmpegEngine : IConversionEngine
         return args;
     }
 
-    private static void ApplyHardwareAcceleration(List<string> args, string dstExt, HardwareAcceleration hw)
+    private static void ApplyVideoCodec(List<string> args, string dstExt, HardwareAcceleration hw, long? videoBitrate, long audioBitrate)
     {
-        switch (hw)
+        bool h264 = dstExt is "mp4" or "mkv" or "mov" or "m4v" or "f4v" or "3gp" or "ts" or "m2ts" or "flv";
+        // H.264 e molti lettori richiedono dimensioni pari e colori 4:2:0 (le GIF non li hanno).
+        string size = videoBitrate switch
         {
-            case HardwareAcceleration.Nvenc:
-                if (dstExt is "mp4" or "mkv" or "mov")
-                    args.AddRange(["-c:v", "h264_nvenc", "-preset", "p4", "-c:a", "aac"]);
-                else if (dstExt is "webm")
-                    args.AddRange(["-c:v", "libvpx-vp9", "-c:a", "libopus"]);
-                break;
+            < 250_000 => "scale=-2:'trunc(min(360,ih)/2)*2'",
+            < 700_000 => "scale=-2:'trunc(min(480,ih)/2)*2'",
+            < 1_500_000 => "scale=-2:'trunc(min(720,ih)/2)*2'",
+            _ => "scale=trunc(iw/2)*2:trunc(ih/2)*2"
+        };
+        args.AddRange(["-vf", size]);
 
-            case HardwareAcceleration.Amf:
-                if (dstExt is "mp4" or "mkv" or "mov")
-                    args.AddRange(["-c:v", "h264_amf", "-c:a", "aac"]);
-                break;
+        if (h264)
+        {
+            string codec = hw switch
+            {
+                HardwareAcceleration.Nvenc => "h264_nvenc",
+                HardwareAcceleration.Amf => "h264_amf",
+                HardwareAcceleration.Qsv => "h264_qsv",
+                _ => "libx264"
+            };
+            args.AddRange(["-c:v", codec, "-pix_fmt", codec == "h264_qsv" ? "nv12" : "yuv420p"]);
+            if (codec == "libx264") args.AddRange(["-preset", "fast"]);
+            if (codec == "libx264" && videoBitrate is null) args.AddRange(["-crf", "22"]);
+            if (codec == "h264_nvenc") args.AddRange(["-preset", "p4"]);
+            args.AddRange(["-c:a", "aac"]);
+            // Indice in testa al file: il video parte subito sul web e nelle chat.
+            if (dstExt is "mp4" or "mov" or "m4v" or "f4v") args.AddRange(["-movflags", "+faststart"]);
+        }
+        else if (dstExt == "webm")
+        {
+            args.AddRange(["-c:v", "libvpx-vp9", "-pix_fmt", "yuv420p", "-c:a", "libopus"]);
+            if (videoBitrate is null) args.AddRange(["-crf", "30", "-b:v", "0"]);
+        }
+        else if (dstExt is "divx" or "xvid") args.AddRange(["-c:v", "mpeg4", "-vtag", "XVID", "-q:v", "4", "-c:a", "libmp3lame", "-f", "avi"]);
+        else if (dstExt == "avi") args.AddRange(["-c:v", "mpeg4", "-q:v", "4", "-c:a", "libmp3lame"]);
+        else if (dstExt == "rmvb") args.AddRange(["-c:v", "rv20", "-c:a", "ac3", "-ar", "44100", "-f", "rm"]);
+        else if (dstExt is "wmv" or "asf") args.AddRange(["-c:v", "wmv2", "-q:v", "4", "-c:a", "wmav2"]);
+        else if (dstExt is "mpg" or "mpeg" or "vob") args.AddRange(["-c:v", "mpeg2video", "-q:v", "3", "-c:a", "mp2"]);
+        else if (dstExt == "ogv") args.AddRange(["-c:v", "libtheora", "-q:v", "7", "-c:a", "libvorbis"]);
 
-            case HardwareAcceleration.Qsv:
-                if (dstExt is "mp4" or "mkv" or "mov")
-                    args.AddRange(["-c:v", "h264_qsv", "-c:a", "aac"]);
-                break;
-
-            default:
-                // CPU Standard
-                if (dstExt is "webm")
-                    args.AddRange(["-c:v", "libvpx-vp9", "-crf", "30", "-b:v", "0", "-c:a", "libopus"]);
-                else if (dstExt is "mp4" or "mkv" or "mov")
-                    args.AddRange(["-c:v", "libx264", "-preset", "fast", "-crf", "22", "-c:a", "aac"]);
-                break;
+        if (videoBitrate is long bitrate)
+        {
+            string rate = $"{Math.Max(1, bitrate / 1000)}k";
+            args.AddRange(["-b:v", rate, "-maxrate", rate, "-bufsize", $"{Math.Max(2, bitrate / 500)}k", "-b:a", $"{audioBitrate / 1000}k"]);
         }
     }
 }
@@ -708,7 +783,10 @@ public sealed class PandocEngine : IConversionEngine
             {
                 "md" or "markdown" => "markdown",
                 "htm" or "html" => "html",
-                "txt" => "plain",
+                "txt" => "html",
+                "tex" => "latex",
+                "typ" => "typst",
+                "adoc" => "asciidoc",
                 _ => srcExt
             };
 
@@ -717,6 +795,9 @@ public sealed class PandocEngine : IConversionEngine
                 "md" or "markdown" => "gfm",
                 "htm" or "html" => "html5",
                 "txt" => "plain",
+                "tex" => "latex",
+                "typ" => "typst",
+                "adoc" => "asciidoc",
                 _ => dstExt
             };
 
@@ -731,16 +812,33 @@ public sealed class PandocEngine : IConversionEngine
                 "--to", to,
                 "--output", dstPath
             };
-            if (!stripMetadata)
-            {
-                args.AddRange(["--metadata", "title=Documento FLIP"]);
-            }
-
             if (to == "html5") args.Add("--embed-resources");
-            args.Add(srcPath);
 
-            var (exitCode, stdout, stderr) = await CliResolver.RunProcessAsync(
-                exe, args, Path.GetDirectoryName(dstPath), context.CancellationToken, timeoutSeconds: 300, context.Progress);
+            string work = Directory.CreateTempSubdirectory("Flip-Pandoc-").FullName;
+            (int exitCode, string stdout, string stderr) run;
+            try
+            {
+                if (!stripMetadata || to is "epub" or "html5") args.AddRange(DocumentTools.PandocTitle(work, to, stripMetadata ? "-" : srcPath));
+                string input = srcPath;
+                if (srcExt == "txt")
+                {
+                    // Pandoc non legge il testo semplice: i paragrafi passano come HTML, senza interpretare simboli Markdown.
+                    input = Path.Combine(work, "text.html");
+                    var paragraphs = Regex.Split(TextFiles.Read(srcPath).ReplaceLineEndings("\n"), @"\n[ \t]*\n+")
+                        .Where(block => !string.IsNullOrWhiteSpace(block))
+                        .Select(block => "<p>" + System.Net.WebUtility.HtmlEncode(block.Trim('\n')).Replace("\n", "<br>\n") + "</p>");
+                    File.WriteAllText(input, "<!doctype html><html><head><meta charset=\"utf-8\"></head><body>\n" + string.Join("\n", paragraphs) + "\n</body></html>", new UTF8Encoding(false));
+                }
+                args.Add(input);
+                run = await CliResolver.RunProcessAsync(
+                    exe, args, Path.GetDirectoryName(dstPath), context.CancellationToken, timeoutSeconds: 300, context.Progress);
+            }
+            finally
+            {
+                try { Directory.Delete(work, true); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { Evidence.Log("pandoc.temp.cleanup.failed", ex.Message); }
+            }
+            var (exitCode, stdout, stderr) = run;
 
             if (exitCode != 0)
             {
@@ -785,7 +883,7 @@ public sealed class LibreOfficeEngine : IConversionEngine
     private static readonly string[] OfficeSourceFormats =
     [
         "doc", "docx", "odt", "rtf", "wps", "pages",
-        "xls", "xlsx", "ods", "csv", "numbers",
+        "xls", "xlsx", "xlsm", "xltx", "xlsb", "ods", "csv", "numbers",
         "ppt", "pptx", "odp", "key", "pub"
     ];
 
@@ -851,6 +949,7 @@ public sealed class LibreOfficeEngine : IConversionEngine
                 var (exitCode, stdout, stderr) = await CliResolver.RunProcessAsync(
                     exe, args, profile, context.CancellationToken, timeoutSeconds: 300, context.Progress);
 
+                if (exitCode != 0 && await TryBuiltInSheetAsync(context).ConfigureAwait(false) is { } fallback) return fallback;
                 if (exitCode != 0)
                 {
                     string err = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
@@ -863,6 +962,7 @@ public sealed class LibreOfficeEngine : IConversionEngine
                     // Cerca eventuali file generati con estensione diversa
                     var any = Directory.GetFiles(tempOutDir).FirstOrDefault();
                     if (any != null) produced = any;
+                    else if (await TryBuiltInSheetAsync(context).ConfigureAwait(false) is { } substitute) return substitute;
                     else return new EngineExecutionResult(false, "", Loc.T("LibreOffice non ha prodotto il file atteso.", "LibreOffice did not produce the expected file."));
                 }
 
@@ -884,8 +984,19 @@ public sealed class LibreOfficeEngine : IConversionEngine
         }
         catch (Exception ex)
         {
+            if (await TryBuiltInSheetAsync(context).ConfigureAwait(false) is { } rescued) return rescued;
             return new EngineExecutionResult(false, "", Loc.F("Eccezione LibreOffice: {0}", "LibreOffice exception: {0}", ex.Message));
         }
+    }
+
+    /// <summary>Se LibreOffice non parte, è bloccato o si interrompe, il foglio di calcolo diventa PDF con il lettore interno.</summary>
+    private static async Task<EngineExecutionResult?> TryBuiltInSheetAsync(ConversionContext context)
+    {
+        string source = (context.SourceExtension ?? "").TrimStart('.').ToLowerInvariant();
+        string target = (context.TargetExtension ?? "").TrimStart('.').ToLowerInvariant();
+        if (target != "pdf" || source is not ("xlsx" or "xlsm" or "xltx" or "xls" or "ods" or "csv") || context.CancellationToken.IsCancellationRequested) return null;
+        var result = await new PdfEngine().ConvertAsync(context).ConfigureAwait(false);
+        return result.Success ? result : null;
     }
 }
 
@@ -1054,26 +1165,12 @@ public sealed class LocalAiEngine : IConversionEngine
             if (Path.IsPathFullyQualified(explicitPath) && File.Exists(explicitPath)) return explicitPath;
         }
 
-        string? exeFolder = string.IsNullOrWhiteSpace(executable) ? null : Path.GetDirectoryName(executable);
-        string?[] localFolders =
-        [
-            exeFolder,
-            exeFolder is not null ? Path.Combine(exeFolder, "models") : null,
-            exeFolder is not null && Directory.GetParent(exeFolder) is { } p1 ? Path.Combine(p1.FullName, "models") : null,
-            exeFolder is not null && Directory.GetParent(exeFolder)?.Parent is { } p2 ? Path.Combine(p2.FullName, "models") : null
-        ];
-
         // Se l'eseguibile è uno script di test (.cmd / .bat), cerca solo nelle cartelle locali del test
         // così i test automatici isolati non vengono influenzati dai modelli reali presenti sul PC.
         bool isTestScript = !string.IsNullOrWhiteSpace(executable) &&
             Path.GetExtension(executable) is ".cmd" or ".bat";
 
-        foreach (string? folder in localFolders)
-        {
-            if (string.IsNullOrEmpty(folder) || !Directory.Exists(folder)) continue;
-            string? found = SearchModelInFolder(folder, requested, requireMinimumSize: !isTestScript);
-            if (found != null) return found;
-        }
+        if (FindModelBeside(executable, requested, requireMinimumSize: !isTestScript) is { } beside) return beside;
 
         if (isTestScript) return null;
 
@@ -1090,6 +1187,28 @@ public sealed class LocalAiEngine : IConversionEngine
         catch { /* best effort */ }
 
         return WhisperLocator.FindGlobalModel(requested);
+    }
+
+    /// <summary>Cerca un modello accanto all'eseguibile o nelle cartelle "models" vicine.</summary>
+    internal static string? FindModelBeside(string? executable, string? requested = null, bool requireMinimumSize = true)
+    {
+        if (string.IsNullOrWhiteSpace(executable)) return null;
+        string expanded = Environment.ExpandEnvironmentVariables(executable.Trim().Trim('"'));
+        if (!Path.IsPathFullyQualified(expanded) || Path.GetDirectoryName(expanded) is not { } exeFolder) return null;
+        var parent = Directory.GetParent(exeFolder);
+        string?[] folders =
+        [
+            exeFolder,
+            Path.Combine(exeFolder, "models"),
+            parent is null ? null : Path.Combine(parent.FullName, "models"),
+            parent?.Parent is { } grandparent ? Path.Combine(grandparent.FullName, "models") : null
+        ];
+        foreach (string? folder in folders)
+        {
+            if (folder is null || !Directory.Exists(folder)) continue;
+            if (SearchModelInFolder(folder, requested, requireMinimumSize) is { } found) return found;
+        }
+        return null;
     }
 
     internal static string? SearchModelInFolder(string folder, string? requested, bool requireMinimumSize)
@@ -1243,6 +1362,8 @@ public sealed class LocalAiEngine : IConversionEngine
 
         context.Progress?.Report(0.92);
         string? produced = FindWhisperOutput(tempDir, outPrefix, outFormat);
+        if (exitCode == 0 && (produced is null || new FileInfo(produced).Length == 0))
+            return (null, Loc.T("Nessun parlato riconosciuto nell'audio.", "No speech was recognised in the audio."));
         if (exitCode != 0 || produced is null)
         {
             string err = string.IsNullOrWhiteSpace(stderr) ? stdout : stderr;
@@ -1921,6 +2042,7 @@ public static class WhisperLocator
 
     public static string? FindBestExecutable(IEnumerable<string>? extraFolders = null)
     {
+        if (StoreEdition.BundledEngine("whisper") is { } bundled) return bundled;
         var snapshot = Cache.Get();
         var candidates = new List<string>(snapshot.Executables);
 
@@ -2101,6 +2223,7 @@ public static class WhisperLocator
         string profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
 
         yield return WhisperModuleInstaller.InstallDirectory;
+        if (StoreEdition.GitHubEngines is { } shared) yield return Path.Combine(shared, "Whisper");
 
         if (!string.IsNullOrWhiteSpace(local))
         {
@@ -2243,6 +2366,8 @@ public static class WhisperModuleInstaller
     private const string ReleasesApi = "https://api.github.com/repos/ggml-org/whisper.cpp/releases?per_page=15";
     private const string ReleaseDownloadPrefix = "https://github.com/ggml-org/whisper.cpp/releases/download/";
     private const string FallbackRuntimeUrl = ReleaseDownloadPrefix + "v1.9.2/" + RuntimeAssetName;
+    private const string FallbackRuntimeSha256 = "49dcc16de826f20bd53d44f947a1ae49dfa81f86cad67a64d80820cb192d674a";
+    private const string ModelSha256 = "60ed5bc3dd14eea856493d334349b405782ddcaf0028d4b5df4088345fba2efe";
     private const string ModelUrl = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/" + ModelFileName;
     private const long MinimumModelBytes = 100L * 1024 * 1024;
     private const uint GgmlMagic = 0x67676d6c;
@@ -2376,7 +2501,7 @@ public static class WhisperModuleInstaller
             string staged = ModelPath + ".download";
             try
             {
-                await DownloadAsync(ModelUrl, staged, null,
+                await DownloadAsync(ModelUrl, staged, ModelSha256,
                     (done, total) => progress?.Report(new(0.20 + 0.78 * Fraction(done, total), Loc.F("Download modello multilingua {0}… {1}", "Downloading multilingual model {0}… {1}", ModelFileName, FormatMb(done, total)))),
                     cancellationToken).ConfigureAwait(false);
                 if (!IsValidModel(staged))
@@ -2394,7 +2519,8 @@ public static class WhisperModuleInstaller
         }
 
         WhisperLocator.InvalidateCache();
-        SettingsStore.Current.Update(settings => settings.CustomEnginePaths["whisper"] = activeExecutable);
+        if (StoreEdition.BundledEngine("whisper") == null)
+            SettingsStore.Current.Update(settings => settings.CustomEnginePaths["whisper"] = activeExecutable);
         progress?.Report(new(1.0, Loc.T("Attivo (Locale)", "Active (Local)")));
         return activeExecutable;
     }
@@ -2421,7 +2547,7 @@ public static class WhisperModuleInstaller
         }
 
         // API GitHub non raggiungibile o limitata: usa l'ultima release nota con i binari allegati.
-        return (FallbackRuntimeUrl, null);
+        return (FallbackRuntimeUrl, FallbackRuntimeSha256);
     }
 
     internal static async Task DownloadAsync(
@@ -2488,10 +2614,13 @@ public static class EngineInstaller
 {
     private const string PandocReleasesApi = "https://api.github.com/repos/jgm/pandoc/releases/latest";
     private const string PandocDownloadPrefix = "https://github.com/jgm/pandoc/releases/download/";
-    private const string PandocFallbackUrl = "https://github.com/jgm/pandoc/releases/download/3.6.4/pandoc-3.6.4-windows-x86_64.zip";
+    private const string PandocFallbackUrl = "https://github.com/jgm/pandoc/releases/download/3.12.1/pandoc-3.12.1-windows-x86_64.zip";
+    private const string PandocFallbackSha256 = "6ef431cb20b2c24a0371fc19200dc49d452be54b1b5c9239f3462841ef53e587";
 
     private const string FfmpegGyanUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip";
     private const string FfmpegBtbnUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip";
+
+    private const string FfmpegBtbnChecksumsUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/checksums.sha256";
 
     private static readonly Dictionary<string, string> WinGetPackages = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -2636,7 +2765,7 @@ public static class EngineInstaller
         {
             Evidence.Log("pandoc.install.release-lookup", ex.Message);
         }
-        return (PandocFallbackUrl, null);
+        return (PandocFallbackUrl, PandocFallbackSha256);
     }
 
     private static async Task<string> InstallFfmpegAsync(
@@ -2654,10 +2783,11 @@ public static class EngineInstaller
             try
             {
                 progress?.Report(new(0.05, Loc.F("Download FFmpeg portatile ({0})…", "Downloading portable FFmpeg ({0})…", new Uri(url).Host)));
+                string checksum = await ResolveFfmpegChecksumAsync(url, cancellationToken).ConfigureAwait(false);
                 await WhisperModuleInstaller.DownloadAsync(
                     url,
                     zipPath,
-                    null,
+                    checksum,
                     (done, total) => progress?.Report(new(
                         0.06 + 0.80 * WhisperModuleInstaller.Fraction(done, total),
                         Loc.F("Download FFmpeg… {0}", "Downloading FFmpeg… {0}", WhisperModuleInstaller.FormatMb(done, total)))),
@@ -2691,6 +2821,24 @@ public static class EngineInstaller
         {
             throw new IOException(Loc.F("Installazione FFmpeg non riuscita: {0}", "FFmpeg installation failed: {0}", downloadError?.Message ?? wingetEx.Message), wingetEx);
         }
+    }
+
+    /// <summary>Impronta pubblicata accanto al pacchetto: senza, il download non viene usato.</summary>
+    private static async Task<string> ResolveFfmpegChecksumAsync(string url, CancellationToken cancellationToken)
+    {
+        string checksumUrl = url == FfmpegBtbnUrl ? FfmpegBtbnChecksumsUrl : url + ".sha256";
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(30));
+        string text = await WhisperModuleInstaller.Http.Value.GetStringAsync(checksumUrl, timeout.Token).ConfigureAwait(false);
+        return ParseFfmpegChecksum(text, url[(url.LastIndexOf('/') + 1)..])
+            ?? throw new IOException(Loc.T("Impronta SHA-256 di FFmpeg non disponibile: download annullato.", "FFmpeg SHA-256 checksum unavailable: download cancelled."));
+    }
+
+    internal static string? ParseFfmpegChecksum(string text, string fileName)
+    {
+        string single = text.Trim();
+        if (Regex.IsMatch(single, @"\A[0-9a-fA-F]{64}\z")) return single;
+        return UpdateInstaller.ParseChecksumFile(text, fileName);
     }
 
     private static async Task<string> InstallViaWinGetAsync(

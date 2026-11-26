@@ -34,6 +34,7 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
     private static readonly XNamespace A = "http://schemas.openxmlformats.org/drawingml/2006/main";
 
     private static readonly string[] DocAndTextFormats = ["txt", "md", "html", "docx", "odt", "rtf"];
+    private static readonly string[] SpreadsheetFormats = ["xlsx", "xlsm", "xltx", "xls", "ods"];
     private static readonly string[] TabularFormats = ["csv", "tsv", "json", "xml", "yaml", "yml"];
 
     public OfficeOpenXmlEngine()
@@ -51,7 +52,8 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
 
         // XLSX -> tabular & markup formats
         foreach (var dst in new[] { "csv", "tsv", "json", "xml", "yaml", "html", "md" })
-            _supportedEdges.Add(new ConversionEdge("xlsx", dst, Id, 10));
+            foreach (var src in SpreadsheetFormats)
+                _supportedEdges.Add(new ConversionEdge(src, dst, Id, 10));
 
         // Tabular formats -> XLSX
         foreach (var src in TabularFormats)
@@ -98,7 +100,7 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
                 ConvertDocOrText(srcPath, srcExt, dstPath, dstExt);
             else if (srcExt is "txt" or "md" && dstExt is "json" or "csv")
                 ConvertTextToData(srcPath, dstPath, dstExt);
-            else if (srcExt == "xlsx" && dstExt is "csv" or "tsv" or "json" or "xml" or "yaml" or "html" or "md")
+            else if (SpreadsheetFormats.Contains(srcExt) && dstExt is "csv" or "tsv" or "json" or "xml" or "yaml" or "html" or "md")
                 ExtractXlsx(srcPath, dstPath, dstExt);
             else if (TabularFormats.Contains(srcExt) && dstExt == "xlsx")
                 GenerateXlsx(srcPath, dstPath, srcExt);
@@ -131,7 +133,7 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
         var doc = XDocument.Load(stream, LoadOptions.PreserveWhitespace);
         var body = doc.Root?.Element(doc.Root.Name.Namespace + "body")
             ?? throw new IOException("Struttura DOCX non valida: body non trovato.");
-        WriteDocument(outputPath, format, body, word: true);
+        WriteDocument(outputPath, format, body, word: true, Path.GetFileNameWithoutExtension(docxPath));
     }
 
     private static void ExtractOdt(string odtPath, string outputPath, string format)
@@ -144,10 +146,10 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
         var doc = XDocument.Load(stream, LoadOptions.PreserveWhitespace);
         var body = doc.Root?.Element(OdtOffice + "body")?.Element(OdtOffice + "text")
             ?? throw new IOException("Struttura ODT non valida: corpo del documento non trovato.");
-        WriteDocument(outputPath, format, body, word: false);
+        WriteDocument(outputPath, format, body, word: false, Path.GetFileNameWithoutExtension(odtPath));
     }
 
-    private static void WriteDocument(string outputPath, string format, XElement body, bool word)
+    private static void WriteDocument(string outputPath, string format, XElement body, bool word, string title)
     {
         XNamespace textNamespace = word ? body.Name.Namespace : OdtText;
         XName paragraphName = textNamespace + "p";
@@ -155,7 +157,7 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
         XName tableName = word ? textNamespace + "tbl" : OdtTable + "table";
         var output = new StringBuilder();
         if (format == "html")
-            output.AppendLine("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Documento</title></head><body>");
+            output.AppendLine($"<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>{System.Net.WebUtility.HtmlEncode(title)}</title></head><body>");
 
         AppendBlocks(body);
         if (format == "html") output.AppendLine("</body></html>");
@@ -303,27 +305,39 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
 
     private static void GenerateDocx(string srcPath, string docxPath, string srcExt)
     {
-        string raw = File.ReadAllText(srcPath, Encoding.UTF8);
+        string raw = TextFiles.Read(srcPath);
         if (string.IsNullOrWhiteSpace(raw)) throw new IOException("File sorgente vuoto.");
 
-        string[] lines = raw.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+        GenerateDocx(srcExt switch
+        {
+            "md" => ReadMarkdownBlocks(raw),
+            "html" => ReadHtmlBlocks(raw),
+            _ => raw.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n').Select(line => (false, line)).ToList()
+        }, docxPath);
+    }
 
+    private static void GenerateDocx(List<(bool IsHeading, string Text)> blocks, string docxPath)
+    {
         // Genera paragrafi Word
         var paragraphs = new List<XElement>();
-        foreach (string line in lines)
+        foreach (var (isHeading, text) in blocks)
         {
-            bool isHeading = srcExt == "md" && line.StartsWith("# ");
-            string text = isHeading ? line.TrimStart('#').Trim() : (srcExt == "html" ? StripHtmlTags(line) : line);
-
-            var pProps = new List<XElement>();
+            var run = new XElement(W + "r");
             if (isHeading)
+                run.Add(new XElement(W + "rPr", new XElement(W + "b"), new XElement(W + "sz", new XAttribute(W + "val", 32))));
+            string[] parts = RemoveInvalidXml(text).Split('\n');
+            for (int i = 0; i < parts.Length; i++)
             {
-                pProps.Add(new XElement(W + "pPr", new XElement(W + "pStyle", new XAttribute(W + "val", "Heading1"))));
+                if (i > 0) run.Add(new XElement(W + "br"));
+                string[] columns = parts[i].Split('\t');
+                for (int c = 0; c < columns.Length; c++)
+                {
+                    if (c > 0) run.Add(new XElement(W + "tab"));
+                    run.Add(new XElement(W + "t", new XAttribute(XNamespace.Xml + "space", "preserve"), columns[c]));
+                }
             }
-
-            var run = new XElement(W + "r", new XElement(W + "t", new XAttribute(XNamespace.Xml + "space", "preserve"), text));
             var para = new XElement(W + "p");
-            foreach (var p in pProps) para.Add(p);
+            if (isHeading) para.Add(new XElement(W + "pPr", new XElement(W + "pStyle", new XAttribute(W + "val", "Heading1"))));
             para.Add(run);
             paragraphs.Add(para);
         }
@@ -361,6 +375,11 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
 
     private static void ExtractXlsx(string xlsxPath, string outputPath, string format)
     {
+        if (!IsTransitionalXlsx(xlsxPath))
+        {
+            WriteTable(SpreadsheetReader.Read(xlsxPath).First(sheet => !sheet.IsEmpty).ToRows(), outputPath, format);
+            return;
+        }
         using var zip = ZipFile.OpenRead(xlsxPath);
 
         // Leggi shared strings
@@ -376,9 +395,10 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
             }
         }
 
-        // Leggi il primo foglio
-        var sheetEntry = zip.GetEntry("xl/worksheets/sheet1.xml")
+        // Il primo foglio visibile all'utente non è sempre sheet1.xml.
+        var sheetEntry = FindFirstSheet(zip)
             ?? throw new IOException("Nessun foglio trovato nel file XLSX.");
+        var dateStyles = ReadDateStyles(zip, out bool date1904);
 
         using var sheetStream = sheetEntry.Open();
         var sheetDoc = XDocument.Load(sheetStream);
@@ -405,6 +425,10 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
                 else if (type == "inlineStr")
                     resolved = string.Concat(cell.Element(Ssml + "is")?.Descendants(Ssml + "t")
                         .Where(t => t.Parent?.Name != Ssml + "rPh").Select(t => t.Value) ?? []);
+                else if (type == "b")
+                    resolved = rawVal == "1" ? "TRUE" : "FALSE";
+                else if (type is "" or "n")
+                    resolved = FormatNumericCell(rawVal, (string?)cell.Attribute("s"), dateStyles, date1904);
                 else
                     resolved = rawVal;
 
@@ -421,7 +445,25 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
         }
 
         if (rows.Count == 0) throw new IOException("Foglio Excel vuoto.");
+        WriteTable(rows, outputPath, format);
+    }
 
+    /// <summary>XLS, ODS, file protetti e la variante Strict di XLSX seguono un altro lettore.</summary>
+    private static bool IsTransitionalXlsx(string path)
+    {
+        try
+        {
+            using var zip = ZipFile.OpenRead(path);
+            if (zip.GetEntry("xl/workbook.xml") is not { } workbook) return zip.GetEntry("xl/worksheets/sheet1.xml") != null;
+            using var stream = workbook.Open();
+            return XDocument.Load(stream).Root?.Name.Namespace == Ssml;
+        }
+        catch (InvalidDataException) { return false; }
+    }
+
+    private static void WriteTable(List<List<string>> rows, string outputPath, string format)
+    {
+        if (rows.Count == 0) throw new IOException("Foglio Excel vuoto.");
         var utf8 = new UTF8Encoding(false);
         var sb = new StringBuilder();
 
@@ -453,7 +495,7 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
 
                 var records = rows.Skip(1).Select(row => headers.Select((header, index) => (header, index))
                     .ToDictionary(item => item.header, item => item.index < row.Count ? row[item.index] : ""));
-                sb.AppendLine(JsonSerializer.Serialize(records, new JsonSerializerOptions { WriteIndented = true }));
+                sb.AppendLine(JsonSerializer.Serialize(records, TextFiles.ReadableJson));
                 break;
 
             case "md":
@@ -469,8 +511,7 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
                         var rowEl = new XElement("row");
                         for (int c = 0; c < headersXml.Count; c++)
                         {
-                            string tag = Regex.Replace(headersXml[c], @"[^a-zA-Z0-9_\-]", "_");
-                            if (string.IsNullOrEmpty(tag) || char.IsDigit(tag[0])) tag = "c_" + tag;
+                            string tag = DataSerializationEngine.SanitizeXmlName(headersXml[c]);
                             rowEl.Add(new XElement(tag, c < row.Count ? row[c] : ""));
                         }
                         rootXml.Add(rowEl);
@@ -488,8 +529,7 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
                         {
                             string prefix = c == 0 ? "- " : "  ";
                             string val = c < row.Count ? row[c] : "";
-                            string escaped = val.Replace("\\", "\\\\").Replace("\"", "\\\"");
-                            sb.AppendLine($"{prefix}{headersYaml[c]}: \"{escaped}\"");
+                            sb.AppendLine($"{prefix}{JsonSerializer.Serialize(headersYaml[c], TextFiles.ReadableJsonLine)}: {JsonSerializer.Serialize(val, TextFiles.ReadableJsonLine)}");
                         }
                     }
                 }
@@ -518,11 +558,88 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
         File.WriteAllText(outputPath, sb.ToString(), utf8);
     }
 
+    private static ZipArchiveEntry? FindFirstSheet(ZipArchive zip)
+    {
+        try
+        {
+            if (zip.GetEntry("xl/workbook.xml") is { } workbook && zip.GetEntry("xl/_rels/workbook.xml.rels") is { } rels)
+            {
+                using var workbookStream = workbook.Open();
+                using var relsStream = rels.Open();
+                // Il primo foglio visibile: quelli nascosti sono dati di servizio.
+                var candidates = XDocument.Load(workbookStream).Descendants(Ssml + "sheet").ToList();
+                var chosen = candidates.FirstOrDefault(sheet => (string?)sheet.Attribute("state") is not ("hidden" or "veryHidden")) ?? candidates.FirstOrDefault();
+                string? id = chosen?.Attributes().FirstOrDefault(attribute => attribute.Name.LocalName == "id")?.Value;
+                string? target = (string?)XDocument.Load(relsStream).Root?.Elements()
+                    .FirstOrDefault(element => (string?)element.Attribute("Id") == id)?.Attribute("Target");
+                if (target is not null && zip.GetEntry(target.StartsWith('/') ? target[1..] : "xl/" + target) is { } sheet) return sheet;
+            }
+        }
+        catch (System.Xml.XmlException ex) { Evidence.Log("xlsx.workbook.invalid", ex.Message); }
+        return zip.GetEntry("xl/worksheets/sheet1.xml");
+    }
+
+    /// <summary>Indici di stile che Excel mostra come date o ore: nel file sono numeri seriali.</summary>
+    private static HashSet<int> ReadDateStyles(ZipArchive zip, out bool date1904)
+    {
+        date1904 = false;
+        var result = new HashSet<int>();
+        try
+        {
+            if (zip.GetEntry("xl/workbook.xml") is { } workbook)
+            {
+                using var stream = workbook.Open();
+                string? value = (string?)XDocument.Load(stream).Descendants(Ssml + "workbookPr").FirstOrDefault()?.Attribute("date1904");
+                date1904 = value is "1" or "true";
+            }
+            if (zip.GetEntry("xl/styles.xml") is not { } styles) return result;
+            using var stylesStream = styles.Open();
+            var doc = XDocument.Load(stylesStream);
+            var custom = new Dictionary<int, string>();
+            foreach (var format in doc.Descendants(Ssml + "numFmts").Elements(Ssml + "numFmt"))
+                if (int.TryParse((string?)format.Attribute("numFmtId"), out int id)) custom[id] = (string?)format.Attribute("formatCode") ?? "";
+            int index = 0;
+            foreach (var style in doc.Root?.Element(Ssml + "cellXfs")?.Elements(Ssml + "xf") ?? [])
+            {
+                if (int.TryParse((string?)style.Attribute("numFmtId"), out int id) &&
+                    (custom.TryGetValue(id, out string? code) ? IsDateFormat(code) : id is >= 14 and <= 22 or >= 27 and <= 36 or >= 45 and <= 47 or >= 50 and <= 58))
+                    result.Add(index);
+                index++;
+            }
+        }
+        catch (System.Xml.XmlException ex) { Evidence.Log("xlsx.styles.invalid", ex.Message); }
+        return result;
+    }
+
+    internal static bool IsDateFormat(string code)
+    {
+        // Testo fra virgolette, colori, valute e caratteri protetti non sono segnaposto di data.
+        string bare = Regex.Replace(code, "\"[^\"]*\"|\\\\.|_.|\\*.|\\[(?!(?:h+|m+|s+)\\])[^\\]]*\\]", "", RegexOptions.IgnoreCase);
+        return !bare.Contains("General", StringComparison.OrdinalIgnoreCase) && Regex.IsMatch(bare, "[dmyhs]", RegexOptions.IgnoreCase);
+    }
+
+    private static string FormatNumericCell(string raw, string? style, HashSet<int> dateStyles, bool date1904)
+    {
+        if (!double.TryParse(raw, NumberStyles.Float, CultureInfo.InvariantCulture, out double number) || !double.IsFinite(number)) return raw;
+        if (int.TryParse(style, out int index) && dateStyles.Contains(index) && number is >= 0 and < 2950000)
+        {
+            if (number < 1) return TimeSpan.FromSeconds(Math.Round(number * 86400)).ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture);
+            // Excel considera bisestile il 1900: prima del 1° marzo la serie è spostata di un giorno.
+            double days = date1904 || number >= 60 ? number : number + 1;
+            var date = (date1904 ? new DateTime(1904, 1, 1) : new DateTime(1899, 12, 30)).AddSeconds(Math.Round(days * 86400));
+            return date.ToString(date.TimeOfDay == TimeSpan.Zero ? "yyyy-MM-dd" : "yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture);
+        }
+        // 0.1 viene salvato da Excel come 0.10000000000000001.
+        if (raw.Contains('.') && raw.Count(char.IsAsciiDigit) > 15 && Math.Abs(number) is >= 1e-4 and < 1e15)
+            return number.ToString("G15", CultureInfo.InvariantCulture);
+        return raw;
+    }
+
     // ── Tabular -> XLSX ──────────────────────────────────────────────────────
 
     private static void GenerateXlsx(string srcPath, string xlsxPath, string srcExt)
     {
-        string raw = File.ReadAllText(srcPath, Encoding.UTF8);
+        string raw = TextFiles.Read(srcPath);
         if (string.IsNullOrWhiteSpace(raw)) throw new IOException("File sorgente vuoto.");
 
         // Parsing rows
@@ -538,8 +655,7 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
         }
         else
         {
-            char delim = srcExt == "tsv" ? '\t' : ',';
-            rows = ParseDelimitedRows(raw, delim);
+            rows = TextFiles.ReadTable(raw, srcExt);
         }
 
         if (rows.Count == 0) throw new IOException("Nessun dato da convertire in XLSX.");
@@ -574,7 +690,8 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
             new XElement(Ssml + "sst",
                 new XAttribute("count", allStrings.Count),
                 new XAttribute("uniqueCount", allStrings.Count),
-                allStrings.Select(s => new XElement(Ssml + "si", new XElement(Ssml + "t", s)))));
+                allStrings.Select(s => new XElement(Ssml + "si", new XElement(Ssml + "t",
+                    new XAttribute(XNamespace.Xml + "space", "preserve"), RemoveInvalidXml(s))))));
 
         using var fs = new FileStream(xlsxPath, FileMode.Create, FileAccess.Write, FileShare.None);
         using var zip = new ZipArchive(fs, ZipArchiveMode.Create);
@@ -726,79 +843,54 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
         return new string(letters[cursor..]);
     }
 
+    /// <summary>I caratteri di controllo non sono ammessi in XML e renderebbero illeggibile il file Office.</summary>
+    internal static string RemoveInvalidXml(string text) =>
+        text.All(ch => System.Xml.XmlConvert.IsXmlChar(ch) || char.IsSurrogate(ch))
+            ? text : new string(text.Where(ch => System.Xml.XmlConvert.IsXmlChar(ch) || char.IsSurrogate(ch)).ToArray());
+
     private static string StripHtmlTags(string html) =>
         Regex.Replace(html, @"<[^>]+>", "").Trim();
 
-    private static List<List<string>> ParseDelimitedRows(string text, char delimiter)
-    {
-        var result = new List<List<string>>();
-        var row = new List<string>();
-        var cell = new StringBuilder();
-        bool inQuotes = false;
-        for (int i = 0; i < text.Length; i++)
-        {
-            char ch = text[i];
-            if (inQuotes)
-            {
-                if (ch == '"')
-                {
-                    if (i + 1 < text.Length && text[i + 1] == '"') { cell.Append('"'); i++; }
-                    else inQuotes = false;
-                }
-                else cell.Append(ch);
-            }
-            else
-            {
-                if (ch == '"') inQuotes = true;
-                else if (ch == delimiter) { row.Add(cell.ToString()); cell.Clear(); }
-                else if (ch is '\r' or '\n')
-                {
-                    if (ch == '\r' && i + 1 < text.Length && text[i + 1] == '\n') i++;
-                    row.Add(cell.ToString()); cell.Clear(); result.Add(row); row = [];
-                }
-                else cell.Append(ch);
-            }
-        }
-        if (cell.Length > 0 || row.Count > 0) { row.Add(cell.ToString()); result.Add(row); }
-        return result;
-    }
-
     private static List<List<string>> ParseJsonToRows(string json)
     {
-        using var doc = System.Text.Json.JsonDocument.Parse(json);
+        using var doc = JsonDocument.Parse(json, new JsonDocumentOptions { AllowTrailingCommas = true, CommentHandling = JsonCommentHandling.Skip });
         var root = doc.RootElement;
+        if (root.ValueKind == JsonValueKind.Object && root.EnumerateObject().Count() == 1 &&
+            root.EnumerateObject().First().Value is { ValueKind: JsonValueKind.Array } nested)
+            root = nested;
+        JsonElement[] items = root.ValueKind == JsonValueKind.Array ? [.. root.EnumerateArray()] : [root];
+        if (items.Length == 0) return [];
+        if (items.All(item => item.ValueKind == JsonValueKind.Array))
+            return items.Select(item => item.EnumerateArray().Select(CellText).ToList()).ToList();
 
-        if (root.ValueKind != System.Text.Json.JsonValueKind.Array)
-            throw new IOException("JSON deve essere un array di oggetti per la conversione in XLSX.");
-
-        var rows = new List<List<string>>();
+        // Le colonne sono l'unione delle chiavi: un campo presente solo in una riga successiva non va perso.
         var headers = new List<string>();
-        bool headersSet = false;
-
-        foreach (var item in root.EnumerateArray())
+        var known = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var item in items)
         {
-            if (item.ValueKind != System.Text.Json.JsonValueKind.Object) continue;
-
-            if (!headersSet)
+            if (item.ValueKind == JsonValueKind.Object)
             {
-                foreach (var prop in item.EnumerateObject())
-                    headers.Add(prop.Name);
-                rows.Add([.. headers]);
-                headersSet = true;
+                foreach (var property in item.EnumerateObject())
+                    if (known.Add(property.Name)) headers.Add(property.Name);
             }
-
-            var row = new List<string>();
-            foreach (var h in headers)
-            {
-                if (item.TryGetProperty(h, out var val))
-                    row.Add(val.ValueKind == System.Text.Json.JsonValueKind.String ? (val.GetString() ?? "") : val.GetRawText());
-                else
-                    row.Add("");
-            }
-            rows.Add(row);
+            else if (known.Add("value")) headers.Add("value");
         }
 
+        var rows = new List<List<string>> { headers };
+        foreach (var item in items)
+        {
+            rows.Add(headers.Select(header => item.ValueKind == JsonValueKind.Object
+                ? item.TryGetProperty(header, out var value) ? CellText(value) : ""
+                : header == "value" ? CellText(item) : "").ToList());
+        }
         return rows;
+
+        static string CellText(JsonElement value) => value.ValueKind switch
+        {
+            JsonValueKind.String => value.GetString() ?? "",
+            JsonValueKind.Null or JsonValueKind.Undefined => "",
+            _ => value.GetRawText()
+        };
     }
 
     private static List<string> BuildSheetHeaders(List<List<string>> rows)
@@ -841,7 +933,7 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
                 if (File.Exists(tmp)) File.Delete(tmp);
             }
         }
-        return File.ReadAllText(srcPath, Encoding.UTF8);
+        return TextFiles.Read(srcPath);
     }
 
     internal static void WriteFromPlainText(string fullText, string dstPath, string dstExt)
@@ -856,7 +948,7 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
         var blocks = ReadStructuredBlocks(srcPath, srcExt);
         if (blocks.Count == 0 || blocks.All(b => string.IsNullOrWhiteSpace(b.Text)))
             throw new IOException("File sorgente vuoto o privo di testo.");
-        WriteStructuredBlocks(blocks, dstPath, dstExt);
+        WriteStructuredBlocks(blocks, dstPath, dstExt, Path.GetFileNameWithoutExtension(srcPath));
     }
 
     private static List<(bool IsHeading, string Text)> ReadStructuredBlocks(string srcPath, string srcExt)
@@ -876,7 +968,7 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
             }
         }
 
-        string raw = File.ReadAllText(srcPath, Encoding.UTF8);
+        string raw = TextFiles.Read(srcPath);
         if (string.IsNullOrWhiteSpace(raw))
             throw new IOException("File sorgente vuoto.");
 
@@ -893,10 +985,14 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
     private static List<(bool IsHeading, string Text)> ReadMarkdownBlocks(string raw)
     {
         var list = new List<(bool IsHeading, string Text)>();
-        foreach (string line in raw.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
+        string[] lines = raw.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n');
+        bool code = false;
+        foreach (string line in lines.Skip(FrontMatterLength(lines)))
         {
             string trimmed = line.TrimEnd();
-            if (trimmed.StartsWith('#'))
+            if (trimmed.StartsWith("```", StringComparison.Ordinal)) code = !code;
+            // "#parola" è un hashtag e dentro un blocco di codice # è un commento.
+            if (!code && Regex.IsMatch(trimmed, @"^#{1,6}\s"))
             {
                 string heading = trimmed.TrimStart('#').Trim();
                 if (heading.Length > 0) list.Add((true, heading));
@@ -909,20 +1005,36 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
         return list;
     }
 
+    /// <summary>Righe della testata YAML (fra due ---) all'inizio di un Markdown.</summary>
+    internal static int FrontMatterLength(string[] lines)
+    {
+        if (lines.Length < 3 || lines[0].TrimEnd() != "---") return 0;
+        int end = Array.FindIndex(lines, 1, line => line.TrimEnd() is "---" or "...");
+        return end > 0 && lines[1..end].All(line => line.Length == 0 || char.IsWhiteSpace(line[0]) || line[0] is '-' or '#' ||
+            Regex.IsMatch(line, @"^[A-Za-z0-9_. -]+:")) ? end + 1 : 0;
+    }
+
     private static List<(bool IsHeading, string Text)> ReadHtmlBlocks(string raw)
     {
         string cleaned = Regex.Replace(raw, @"<(script|style|head)\b[^>]*>.*?</\1>", "", RegexOptions.IgnoreCase | RegexOptions.Singleline);
         var list = new List<(bool IsHeading, string Text)>();
-        var blockMatches = Regex.Matches(cleaned, @"<(h[1-6]|p|li|div|tr|pre)\b[^>]*>(.*?)</\1>", RegexOptions.IgnoreCase | RegexOptions.Singleline);
-        if (blockMatches.Count > 0)
+        cleaned = Regex.Replace(cleaned, @"<!--.*?-->", "", RegexOptions.Singleline);
+        // Il testo è delimitato dai tag di blocco, anche quando sono annidati o non chiusi.
+        foreach (string part in Regex.Split(cleaned, @"(<pre\b[^>]*>.*?</pre>)", RegexOptions.IgnoreCase | RegexOptions.Singleline))
         {
-            foreach (Match m in blockMatches)
+            bool preformatted = Regex.IsMatch(part, @"^<pre\b", RegexOptions.IgnoreCase);
+            string flow = preformatted ? "\uE000" + part.ReplaceLineEndings("\uE002") + "\uE000" : Regex.Replace(part, @"\s+", " ");
+            flow = Regex.Replace(flow, @"<br\s*/?>", "\uE002", RegexOptions.IgnoreCase);
+            flow = Regex.Replace(flow, @"<h[1-6]\b[^>]*>", "\uE000\uE001", RegexOptions.IgnoreCase);
+            flow = Regex.Replace(flow, @"</t[dh]>\s*(?=<t[dh]\b)", "\t", RegexOptions.IgnoreCase);
+            flow = Regex.Replace(flow, @"</?(?:h[1-6]|p|li|ul|ol|div|tr|table|thead|tbody|section|article|header|footer|main|nav|aside|blockquote|figure|figcaption|dl|dt|dd|form|hr|address|body|html)\b[^>]*>", "\uE000", RegexOptions.IgnoreCase);
+            flow = System.Net.WebUtility.HtmlDecode(Regex.Replace(flow, @"<[^>]+>", ""));
+            foreach (string block in flow.Split('\uE000'))
             {
-                string tag = m.Groups[1].Value.ToLowerInvariant();
-                string inner = Regex.Replace(m.Groups[2].Value, @"<br\s*/?>", "\n", RegexOptions.IgnoreCase);
-                string text = System.Net.WebUtility.HtmlDecode(StripHtmlTags(inner)).Trim();
-                if (text.Length > 0)
-                    list.Add((tag.StartsWith('h'), text));
+                bool heading = block.Contains('\uE001');
+                string text = block.Replace("\uE001", "").Replace('\uE002', '\n');
+                text = preformatted ? text.Trim('\n') : Regex.Replace(text, @" *\n *", "\n").Trim(' ', '\n', '\t');
+                if (!string.IsNullOrWhiteSpace(text)) list.Add((heading, text));
             }
         }
         if (list.Count == 0)
@@ -936,6 +1048,8 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
 
     private static List<(bool IsHeading, string Text)> ReadRtfBlocks(string rtf)
     {
+        var ansi = Regex.Match(rtf, @"\\ansicpg(\d+)");
+        int codePage = ansi.Success ? int.Parse(ansi.Groups[1].Value, CultureInfo.InvariantCulture) : 1252;
         // Rimuovi i gruppi RTF di intestazione (\fonttbl, \colortbl, \stylesheet, \info, \*\...)
         string text = Regex.Replace(rtf, @"\{\\\*\\[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", "");
         text = Regex.Replace(text, @"\{\\(?:fonttbl|colortbl|stylesheet|info|pict)\b[^{}]*(?:\{[^{}]*\}[^{}]*)*\}", "");
@@ -951,8 +1065,8 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
         });
         text = Regex.Replace(text, @"\\'([0-9a-fA-F]{2})", m =>
         {
-            byte b = Convert.ToByte(m.Groups[1].Value, 16);
-            return ((char)b).ToString();
+            // Windows-1252: 92 è l'apostrofo tipografico e 80 l'euro, non caratteri di controllo.
+            return TextFiles.DecodeAnsi(Convert.ToByte(m.Groups[1].Value, 16), codePage);
         });
         text = Regex.Replace(text, @"\\([\\{}])", "$1");
         text = Regex.Replace(text, @"\\[a-zA-Z]+-?\d*\s?", "");
@@ -961,7 +1075,7 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
             .Select(l => (IsHeading: false, Text: l.TrimEnd())).ToList();
     }
 
-    private static void WriteStructuredBlocks(List<(bool IsHeading, string Text)> blocks, string dstPath, string dstExt)
+    private static void WriteStructuredBlocks(List<(bool IsHeading, string Text)> blocks, string dstPath, string dstExt, string title = "")
     {
         var utf8 = new UTF8Encoding(false);
         switch (dstExt)
@@ -1000,7 +1114,7 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
             case "html":
                 {
                     var sb = new StringBuilder();
-                    sb.AppendLine("<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>Documento</title></head><body>");
+                    sb.AppendLine($"<!DOCTYPE html><html><head><meta charset=\"utf-8\"><title>{System.Net.WebUtility.HtmlEncode(title)}</title></head><body>");
                     foreach (var (isHeading, text) in blocks)
                     {
                         if (string.IsNullOrWhiteSpace(text)) continue;
@@ -1013,18 +1127,7 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
                 break;
 
             case "docx":
-                {
-                    string tmp = Path.Combine(Path.GetTempPath(), $"flip-gen-docx-{Guid.NewGuid():N}.md");
-                    try
-                    {
-                        WriteStructuredBlocks(blocks, tmp, "md");
-                        GenerateDocx(tmp, dstPath, "md");
-                    }
-                    finally
-                    {
-                        if (File.Exists(tmp)) File.Delete(tmp);
-                    }
-                }
+                GenerateDocx(blocks, dstPath);
                 break;
 
             case "odt":
@@ -1047,9 +1150,9 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
         foreach (var (isHeading, text) in blocks)
         {
             if (isHeading)
-                bodyElements.Add(new XElement(OdtText + "h", new XAttribute(OdtText + "outline-level", "2"), text));
+                bodyElements.Add(new XElement(OdtText + "h", new XAttribute(OdtText + "outline-level", "2"), OdtContent(text)));
             else
-                bodyElements.Add(new XElement(OdtText + "p", text));
+                bodyElements.Add(new XElement(OdtText + "p", OdtContent(text)));
         }
 
         var contentDoc = new XDocument(
@@ -1072,7 +1175,19 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
                     new XAttribute(manifestNs + "media-type", "application/vnd.oasis.opendocument.text")),
                 new XElement(manifestNs + "file-entry",
                     new XAttribute(manifestNs + "full-path", "content.xml"),
+                    new XAttribute(manifestNs + "media-type", "text/xml")),
+                new XElement(manifestNs + "file-entry",
+                    new XAttribute(manifestNs + "full-path", "styles.xml"),
                     new XAttribute(manifestNs + "media-type", "text/xml"))));
+        // Pandoc e altri lettori rifiutano un ODT senza stili, anche se vuoti.
+        var stylesDoc = new XDocument(
+            new XDeclaration("1.0", "UTF-8", null),
+            new XElement(OdtOffice + "document-styles",
+                new XAttribute(XNamespace.Xmlns + "office", OdtOffice.NamespaceName),
+                new XAttribute(OdtOffice + "version", "1.2"),
+                new XElement(OdtOffice + "styles"),
+                new XElement(OdtOffice + "automatic-styles"),
+                new XElement(OdtOffice + "master-styles")));
 
         using var fs = new FileStream(odtPath, FileMode.Create, FileAccess.Write, FileShare.None);
         using var zip = new ZipArchive(fs, ZipArchiveMode.Create);
@@ -1082,7 +1197,21 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
             w.Write("application/vnd.oasis.opendocument.text");
 
         WriteZipEntry(zip, "META-INF/manifest.xml", manifestDoc.ToString());
+        WriteZipEntry(zip, "styles.xml", stylesDoc.ToString());
         WriteZipEntry(zip, "content.xml", contentDoc.ToString());
+    }
+
+    /// <summary>In ODT spazi ripetuti, tabulazioni e a capo sono elementi: come testo verrebbero ridotti a uno spazio.</summary>
+    private static IEnumerable<object> OdtContent(string text)
+    {
+        foreach (Match part in Regex.Matches(RemoveInvalidXml(text), "\n|\t| {2,}|^ |[^\n\t ]+(?: [^\n\t ]+)*| "))
+        {
+            if (part.Value == "\n") yield return new XElement(OdtText + "line-break");
+            else if (part.Value == "\t") yield return new XElement(OdtText + "tab");
+            else if (part.Value.Trim(' ').Length == 0)
+                yield return new XElement(OdtText + "s", new XAttribute(OdtText + "c", part.Length));
+            else yield return new XText(part.Value);
+        }
     }
 
     private static void GenerateRtf(List<(bool IsHeading, string Text)> blocks, string rtfPath)
@@ -1095,6 +1224,9 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
             foreach (char c in text)
             {
                 if (c == '\\' || c == '{' || c == '}') sb.Append('\\').Append(c);
+                else if (c == '\n') sb.Append(@"\line ");
+                else if (c == '\t') sb.Append(@"\tab ");
+                else if (c < ' ') continue;
                 else if (c <= 0x7F) sb.Append(c);
                 else sb.Append($@"\u{(short)c}?");
             }
@@ -1107,7 +1239,7 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
 
     private static void ConvertTextToData(string srcPath, string dstPath, string dstExt)
     {
-        string raw = File.ReadAllText(srcPath, Encoding.UTF8);
+        string raw = TextFiles.Read(srcPath);
         if (string.IsNullOrWhiteSpace(raw)) throw new IOException("File di testo vuoto.");
         string[] lines = raw.Replace("\r\n", "\n").Replace('\r', '\n')
             .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
@@ -1116,7 +1248,7 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
         if (dstExt == "json")
         {
             var payload = lines.Select((line, index) => new { line = index + 1, text = line }).ToArray();
-            File.WriteAllText(dstPath, JsonSerializer.Serialize(payload, new JsonSerializerOptions { WriteIndented = true }), utf8);
+            File.WriteAllText(dstPath, JsonSerializer.Serialize(payload, TextFiles.ReadableJson), utf8);
         }
         else if (dstExt == "csv")
         {
@@ -1144,7 +1276,7 @@ public sealed class OfficeOpenXmlEngine : IConversionEngine
         if (ext == "docx")
             return ParseDocxToRichDocument(srcPath);
         if (ext == "md")
-            return ParseMarkdownToRichDocument(File.ReadAllText(srcPath, Encoding.UTF8));
+            return ParseMarkdownToRichDocument(TextFiles.Read(srcPath));
         if (ext is "odt" or "rtf" or "html")
             return BuildRichDocumentFromStructuredBlocks(ReadStructuredBlocks(srcPath, ext));
         return null;

@@ -44,7 +44,7 @@ try{
             if(Test-Path -LiteralPath $notice){Copy-Item -LiteralPath $notice -Destination (Join-Path $output 'licenses\pandoc')}
         }
     }
-    Copy-Item -LiteralPath (Join-Path $root 'LICENSE'),(Join-Path $root 'THIRD_PARTY_NOTICES.md') -Destination $output
+    Copy-Item -LiteralPath (Join-Path $root 'LICENSE'),(Join-Path $root 'NOTICE'),(Join-Path $root 'THIRD_PARTY_NOTICES.md') -Destination $output
     Write-Output ('Built '+$output+'\Flip.exe. Run with --ui for the file panel; --background for tray only.')
 }
 finally{Pop-Location}

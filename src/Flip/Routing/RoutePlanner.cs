@@ -272,8 +272,11 @@ public static class RoutePlanner
             (_, FormatCategory.TextAndMarkup) => ["txt", "md", "html", "pdf", "docx", "odt", "rtf", "pdfa", "json", "csv", "epub", "rst", "adoc"],
             ("rtf", _) => ["pdf", "docx", "txt", "md", "html", "odt", "pdfa"],
             (_, FormatCategory.DocumentAndEmail) => ["pdf", "txt", "md", "html", "odt", "rtf", "docx", "pdfa", "epub", "png", "jpg", "webp", "bmp", "gif", "tiff", "ico"],
-            ("csv" or "tsv", _) or (_, FormatCategory.Spreadsheet) =>
-                ["csv", "xlsx", "tsv", "json", "xml", "yaml", "html", "md", "pdf", "ods", "toml", "ini"],
+            // Il PDF è la richiesta più comune per un foglio: non deve finire dentro "+ EXTRA".
+            ("csv" or "tsv", _) =>
+                ["xlsx", "pdf", "json", "csv", "tsv", "xml", "yaml", "html", "md", "ods", "toml", "ini"],
+            (_, FormatCategory.Spreadsheet) =>
+                ["pdf", "csv", "xlsx", "json", "html", "xml", "tsv", "md", "yaml", "ods", "toml", "ini"],
             (_, FormatCategory.DataAndConfig) =>
                 ["yaml", "json", "xml", "toml", "csv", "ini", "tsv", "jsonl", "xlsx", "html", "md", "pdf"],
             (_, FormatCategory.RasterAndRaw) =>
@@ -400,6 +403,11 @@ public static class RoutePlanner
                 // Prefer LibreOffice over simplified built-in / Pandoc converters for Office document layout fidelity.
                 if (IsOfficeDocumentToPdf(edge.SourceExtension, edge.TargetExtension) && engine.Id == "pdf_builtin")
                     cost += 20;
+                // LibreOffice conserva grafici e stampa dei fogli; una tabella CSV è più fedele con il lettore interno.
+                if (edge.TargetExtension is "pdf" or "pdfa" &&
+                    (engine.Id == "pdf_builtin" ? edge.SourceExtension is "xlsx" or "xlsm" or "xltx" or "xls" or "ods"
+                        : engine.Id == "libreoffice" && edge.SourceExtension == "csv"))
+                    cost += 20;
                 if (IsOfficeWordFormat(edge.SourceExtension) && IsOfficeWordFormat(edge.TargetExtension) &&
                     engine.Id is "openxml_builtin" or "pandoc")
                     cost += 20;
@@ -427,11 +435,11 @@ public static class RoutePlanner
         return edge.TargetExtension switch
         {
             "docx" or "odt" or "rtf" => edge.SourceExtension is "doc" or "docx" or "odt" or "rtf" or "wps" or "pages",
-            "xlsx" or "ods" => edge.SourceExtension is "xls" or "xlsx" or "ods" or "csv" or "numbers",
+            "xlsx" or "ods" => edge.SourceExtension is "xls" or "xlsx" or "xlsm" or "xltx" or "xlsb" or "ods" or "csv" or "numbers",
             "pptx" or "odp" => edge.SourceExtension is "ppt" or "pptx" or "odp" or "key",
             "txt" => edge.SourceExtension is "doc" or "docx" or "odt" or "rtf" or "wps" or "pages",
             "html" => edge.SourceExtension is "doc" or "docx" or "odt" or "rtf" or "wps" or "pages" or
-                "xls" or "xlsx" or "ods" or "csv" or "numbers",
+                "xls" or "xlsx" or "xlsm" or "xltx" or "xlsb" or "ods" or "csv" or "numbers",
             _ => true
         };
     }
@@ -683,6 +691,7 @@ public static class RoutePlanner
         var timer = Stopwatch.StartNew();
         var staged = new List<OutputPathAllocator.StagedOutput>(targets.Length);
         var outputCounts = new int[targets.Length];
+        var targetErrors = new string?[targets.Length];
         long sourceBytes = 0;
         OutputPathAllocator.CommitResult commit;
         try
@@ -697,13 +706,23 @@ public static class RoutePlanner
             {
                 ct.ThrowIfCancellationRequested();
                 string target = targets[i];
-                if (!routes.TryGetValue(target, out var route))
-                    throw new IOException($"Nessun percorso da '{sourceExt}' a '{target}'.");
+                IReadOnlyList<string> artifacts;
+                try
+                {
+                    if (!routes.TryGetValue(target, out var route))
+                        throw new IOException($"Nessun percorso da '{sourceExt}' a '{target}'.");
 
-                var targetProgress = ScaleProgress(progress, 0.95 * i / targets.Length, 0.95 / targets.Length);
-                var targetParameters = MergeTargetParameters(settings, target, parameters);
-                var artifacts = await StageRouteAsync(route, job, source, i, settings, targetParameters, targetProgress, ct)
-                    .ConfigureAwait(false);
+                    var targetProgress = ScaleProgress(progress, 0.95 * i / targets.Length, 0.95 / targets.Length);
+                    var targetParameters = MergeTargetParameters(settings, target, parameters);
+                    artifacts = await StageRouteAsync(route, job, source, i, settings, targetParameters, targetProgress, ct)
+                        .ConfigureAwait(false);
+                }
+                // Un formato non riuscito non deve annullare gli altri scelti insieme.
+                catch (Exception ex) when (ex is not OperationCanceledException && !ct.IsCancellationRequested && targets.Length > 1)
+                {
+                    targetErrors[i] = ex.Message;
+                    continue;
+                }
                 outputCounts[i] = artifacts.Count;
                 for (int page = 0; page < artifacts.Count; page++)
                 {
@@ -711,7 +730,9 @@ public static class RoutePlanner
                     staged.Add(new(artifacts[page], OutputPathAllocator.BuildOutputFileName(sourceName, sourceExt, target, suffix)));
                 }
             }
-            commit = job.CommitOutputAndApplyRules(staged, ct);
+            commit = staged.Count == 0 && targetErrors.Any(error => error != null)
+                ? new([], targetErrors.First(error => error != null))
+                : job.CommitOutputAndApplyRules(staged, ct, allowRecycle: targetErrors.All(error => error == null));
         }
         catch (OperationCanceledException)
         {
@@ -731,7 +752,7 @@ public static class RoutePlanner
             bool success = outputCounts[i] > 0 && published.Length == outputCounts[i];
             string[] paths = published.Select(output => output.Path).ToArray();
             var result = new EngineExecutionResult(success, paths.FirstOrDefault() ?? "",
-                success ? commit.Warning : commit.Error, published.Sum(output => output.Bytes))
+                success ? commit.Warning : targetErrors[i] ?? commit.Error, published.Sum(output => output.Bytes))
             {
                 OutputFilePaths = paths
             };

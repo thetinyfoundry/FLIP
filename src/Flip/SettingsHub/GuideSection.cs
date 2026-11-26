@@ -181,7 +181,8 @@ public static class GuideSection
         }
         stackFeatures.Children.Add(features);
         root.Children.Add(cardFeatures);
-        root.Children.Add(BuildUpdatesCard());
+        root.Children.Add(StoreEdition.IsPackaged ? BuildStoreUpdatesCard() : BuildUpdatesCard());
+        root.Children.Add(BuildSupportCard());
 
         var tour = HubUi.CreateButton(Loc.T("Riapri tour iniziale", "Replay welcome tour"), false, FirstRunWelcomeWindow.ShowSingleton);
         tour.HorizontalAlignment = HorizontalAlignment.Left;
@@ -196,6 +197,37 @@ public static class GuideSection
     {
         _checkOnOpen = true;
         SettingsHubWindow.ShowSingleton(SettingsHubWindow.GuideSectionIndex, null, null, null);
+    }
+
+    /// <summary>The Store installs updates on its own; this only opens its page.</summary>
+    private static Border BuildStoreUpdatesCard()
+    {
+        var card = HubUi.CreateCard(Loc.T("Aggiornamenti", "Updates"),
+            Loc.F("Versione installata: {0}. Si aggiorna da Microsoft Store.", "Installed version: {0}. Updated by the Microsoft Store.", UpdateChecker.CurrentVersion));
+        var button = HubUi.CreateButton(Loc.T("Apri Microsoft Store", "Open Microsoft Store"), false, () =>
+        {
+            try { StoreEdition.OpenStoreUpdates(); }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { Evidence.Log("store.open.error", ex.Message); }
+        });
+        button.HorizontalAlignment = HorizontalAlignment.Left;
+        ((StackPanel)card.Child).Children.Add(button);
+        return card;
+    }
+
+    /// <summary>Voluntary support on an external page: it unlocks nothing and FLIP never sees payment data.</summary>
+    private static Border BuildSupportCard()
+    {
+        var card = HubUi.CreateCard(Loc.T("Sostieni FLIP", "Support FLIP"),
+            Loc.T("FLIP è gratuito e completo. Se vuoi, puoi offrirmi un caffè: è un contributo volontario e non sblocca funzioni. Si apre il browser su Buy Me a Coffee, che gestisce il pagamento.",
+                "FLIP is free and complete. If you like, you can buy me a coffee: it is voluntary and unlocks nothing. Your browser opens Buy Me a Coffee, which handles the payment."));
+        var button = HubUi.CreateButton(Loc.T("Offrimi un caffè", "Buy me a coffee"), true, () =>
+        {
+            try { UpdateChecker.OpenBrowser(UpdateChecker.SupportUrl); }
+            catch (Exception ex) when (ex is System.ComponentModel.Win32Exception or InvalidOperationException) { Evidence.Log("support.open.error", ex.Message); }
+        });
+        button.HorizontalAlignment = HorizontalAlignment.Left;
+        ((StackPanel)card.Child).Children.Add(button);
+        return card;
     }
 
     /// <summary>Check GitHub on request, then download, verify and install the latest stable release.</summary>

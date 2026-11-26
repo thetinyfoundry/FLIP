@@ -42,7 +42,7 @@ if (!$nativeArchive) {
 if ((Get-FileHash $nativeArchive).Hash.ToLowerInvariant() -ne '88276459349b291c41f10422dad0210f007c04d919c8fa56472b6b7c6406adf4') { throw 'Checksum archivio PDFium non valido.' }
 $native = Join-Path $OutputRoot 'pdfium-notices'
 New-Item -ItemType Directory -Path $native -Force | Out-Null
-& tar -xzf $nativeArchive -C $native
+& (Join-Path $env:SystemRoot 'System32\tar.exe') -xzf $nativeArchive -C $native
 if ($LASTEXITCODE -ne 0) { throw 'Impossibile estrarre le licenze PDFium.' }
 $noticeFiles = @(Get-ChildItem $native -Recurse -File | Where-Object { $_.FullName -match '[\\/]licenses?[\\/]|[\\/](LICENSE|NOTICE|COPYING)(\.|$)' })
 if (!$noticeFiles.Count) { throw 'Bundle licenze PDFium mancante.' }

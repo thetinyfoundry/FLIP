@@ -11,10 +11,15 @@ internal static class StartupIntegration
     internal static string CommandFor(string executable) => "\"" + Path.GetFullPath(executable) + "\" --background";
     internal static bool Enabled
     {
-        get { using var key = Registry.CurrentUser.OpenSubKey(KeyPath); return string.Equals(key?.GetValue(ValueName) as string, CommandFor(Executable), StringComparison.OrdinalIgnoreCase); }
+        get
+        {
+            if (StoreEdition.IsPackaged) return StoreEdition.StartupEnabled;
+            using var key = Registry.CurrentUser.OpenSubKey(KeyPath); return string.Equals(key?.GetValue(ValueName) as string, CommandFor(Executable), StringComparison.OrdinalIgnoreCase);
+        }
     }
     internal static void SetEnabled(bool enabled)
     {
+        if (StoreEdition.IsPackaged) { StoreEdition.SetStartup(enabled); return; }
         string expected = CommandFor(Executable);
         using var key = Registry.CurrentUser.CreateSubKey(KeyPath, true);
         string? existing = key.GetValue(ValueName) as string;
@@ -30,6 +35,8 @@ internal static class StartupIntegration
     }
     internal static void Shortcuts(bool remove)
     {
+        // Nel pacchetto Store il collegamento nel menu Start lo crea e lo toglie Windows.
+        if (StoreEdition.IsPackaged) return;
         string[] locations = [Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory),"Flip.lnk"),
             Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Programs),"Flip.lnk")];
         var type = Type.GetTypeFromProgID("WScript.Shell") ?? throw new IOException("Windows Script Host non disponibile per creare i collegamenti.");

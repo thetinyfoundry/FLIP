@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- __VERSION__ viene sostituito da scripts/Package-Store.ps1. Identità assegnata da Partner Center. -->
+<Package
+  xmlns="http://schemas.microsoft.com/appx/manifest/foundation/windows10"
+  xmlns:uap="http://schemas.microsoft.com/appx/manifest/uap/windows10"
+  xmlns:uap3="http://schemas.microsoft.com/appx/manifest/uap/windows10/3"
+  xmlns:uap10="http://schemas.microsoft.com/appx/manifest/uap/windows10/10"
+  xmlns:desktop="http://schemas.microsoft.com/appx/manifest/desktop/windows10"
+  xmlns:desktop4="http://schemas.microsoft.com/appx/manifest/desktop/windows10/4"
+  xmlns:com="http://schemas.microsoft.com/appx/manifest/com/windows10"
+  xmlns:rescap="http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities"
+  IgnorableNamespaces="uap uap3 uap10 desktop desktop4 com rescap">
+  <Identity Name="TheTinyFoundry.FLIPConverter" Publisher="CN=F13DDC2D-F07A-47CA-98BD-801A90665EC0" Version="__VERSION__" ProcessorArchitecture="x64" />
+  <Properties>
+    <DisplayName>FLIP Converter</DisplayName>
+    <PublisherDisplayName>The Tiny Foundry</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+  </Properties>
+  <Dependencies>
+    <TargetDeviceFamily Name="Windows.Desktop" MinVersion="10.0.19041.0" MaxVersionTested="10.0.26100.0" />
+  </Dependencies>
+  <Resources>
+    <Resource Language="en-us" />
+    <Resource Language="it-it" />
+  </Resources>
+  <Applications>
+    <Application Id="Flip" Executable="Flip.exe" EntryPoint="Windows.FullTrustApplication" uap10:Parameters="--ui">
+      <uap:VisualElements DisplayName="FLIP Converter" Description="Convert files on your PC" BackgroundColor="transparent"
+        Square150x150Logo="Assets\Square150x150Logo.png" Square44x44Logo="Assets\Square44x44Logo.png">
+        <uap:DefaultTile Wide310x150Logo="Assets\Wide310x150Logo.png" Square71x71Logo="Assets\Square71x71Logo.png"
+          Square310x310Logo="Assets\Square310x310Logo.png" ShortName="FLIP" />
+      </uap:VisualElements>
+      <Extensions>
+        <desktop:Extension Category="windows.startupTask" Executable="FlipStartup.exe" EntryPoint="Windows.FullTrustApplication">
+          <desktop:StartupTask TaskId="FlipStartup" Enabled="false" DisplayName="FLIP Converter" />
+        </desktop:Extension>
+        <uap3:Extension Category="windows.appExecutionAlias" Executable="Flip.exe" EntryPoint="Windows.FullTrustApplication">
+          <uap3:AppExecutionAlias>
+            <desktop:ExecutionAlias Alias="flip-converter.exe" />
+          </uap3:AppExecutionAlias>
+        </uap3:Extension>
+        <desktop4:Extension Category="windows.fileExplorerContextMenus">
+          <desktop4:FileExplorerContextMenus>
+            <desktop4:ItemType Type="*">
+              <desktop4:Verb Id="ConvertWithFlip" Clsid="7C0B6C53-6C1E-4B5C-9B35-2E9C5D7E4A11" />
+            </desktop4:ItemType>
+          </desktop4:FileExplorerContextMenus>
+        </desktop4:Extension>
+        <com:Extension Category="windows.comServer">
+          <com:ComServer>
+            <com:SurrogateServer DisplayName="FLIP context menu">
+              <com:Class Id="7C0B6C53-6C1E-4B5C-9B35-2E9C5D7E4A11" Path="FlipShell.dll" ThreadingModel="STA" />
+            </com:SurrogateServer>
+          </com:ComServer>
+        </com:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+  <Capabilities>
+    <Capability Name="internetClient" />
+    <rescap:Capability Name="runFullTrust" />
+  </Capabilities>
+</Package>

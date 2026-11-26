@@ -400,7 +400,9 @@ internal sealed class Host : Window, IDisposable
         testSoundItem.Text = Loc.T("Prova il suono", "Test sound");
         startupItem.Text = Loc.T("Avvia con Windows", "Launch at startup");
         welcomeTourItem.Text = Loc.T("Guida Rapida di Benvenuto", "Welcome Tour");
-        checkUpdatesItem.Text = Loc.T("Verifica aggiornamenti su GitHub…", "Check for updates on GitHub…");
+        checkUpdatesItem.Text = StoreEdition.IsPackaged
+            ? Loc.T("Aggiornamenti in Microsoft Store…", "Updates in Microsoft Store…")
+            : Loc.T("Verifica aggiornamenti su GitHub…", "Check for updates on GitHub…");
         cancelItem.Text = Loc.T("Annulla conversione", "Cancel conversion");
         exitItem.Text = Loc.T("Esci da Flip", "Quit FLIP");
     }
@@ -526,7 +528,7 @@ internal sealed class Host : Window, IDisposable
         Evidence.Log("host.start", new { pid = Environment.ProcessId, buttonsSwapped = Native.ButtonsSwapped, wheelShortcut.Name, DocumentTools.Pandoc, DocumentTools.Office, MediaTools.Ffmpeg });
         _ = Listen();
         UpdateInstaller.RequestExit = () => Dispatcher.BeginInvoke(Exit);
-        UpdateInstaller.ConversionRunning = () => busy;
+        UpdateInstaller.ConversionRunning = () => busy || watchFolderService?.IsConverting == true;
         // After an in-app update the installer may still be finishing; remove its downloaded package a little later.
         _ = Task.Delay(TimeSpan.FromSeconds(30), lifetime.Token).ContinueWith(t => { if (!t.IsCanceled && !UpdateInstaller.Busy) UpdateInstaller.CleanupStagedUpdates(null); }, TaskScheduler.Default);
         if (args.Contains("--measure-idle")) MeasureIdle();
@@ -556,6 +558,7 @@ internal sealed class Host : Window, IDisposable
     {
         try
         {
+            if (StoreEdition.IsPackaged) { StoreEdition.OpenStoreUpdates(); return; }
             var info = await UpdateChecker.CheckLatestAsync(lifetime.Token);
             Evidence.Log("update.check", info);
             if (info.IsNewer)
@@ -587,7 +590,9 @@ internal sealed class Host : Window, IDisposable
         catch (Exception ex)
         {
             Evidence.Log("update.error", ex.Message);
-            Toast(Loc.T("Impossibile verificare gli aggiornamenti su GitHub.", "Could not check GitHub updates."));
+            Toast(StoreEdition.IsPackaged
+                ? Loc.T("Impossibile aprire Microsoft Store.", "Could not open the Microsoft Store.")
+                : Loc.T("Impossibile verificare gli aggiornamenti su GitHub.", "Could not check GitHub updates."));
         }
     }
     void MeasureIdle()
@@ -1318,10 +1323,19 @@ internal sealed class Host : Window, IDisposable
                 Toast(Loc.T("Nessun file dell'ultima conversione disponibile da annullare.", "No files from the last conversion to undo."));
                 return;
             }
+            var (restored, missing) = OutputPathAllocator.RestoreOriginals(existing);
+            if (missing.Length > 0)
+            {
+                // Senza l'originale il file convertito è l'unica copia: non va tolto.
+                Toast(Loc.F("Annullamento interrotto: l'originale {0} non è più nel Cestino, quindi i file convertiti restano al loro posto.",
+                    "Undo stopped: the original {0} is no longer in the Recycle Bin, so the converted files stay in place.", Path.GetFileName(missing[0])));
+                return;
+            }
             int count = OutputPathAllocator.MoveToRecycleBin(existing);
             lastGeneratedOutputs = [];
-            Evidence.Log("undo.last-conversion", new { count, files = existing });
-            Toast(Loc.F("Ultima conversione annullata: {0} file spostati nel Cestino.", "Undid last conversion: moved {0} file(s) to Recycle Bin.", count));
+            Evidence.Log("undo.last-conversion", new { count, restored, files = existing });
+            Toast(Loc.F("Ultima conversione annullata: {0} file spostati nel Cestino.", "Undid last conversion: moved {0} file(s) to Recycle Bin.", count) +
+                (restored > 0 ? " " + Loc.F("Originali ripristinati: {0}.", "Originals restored: {0}.", restored) : ""));
         }
         catch (Exception ex)
         {

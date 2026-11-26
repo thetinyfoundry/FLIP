@@ -232,6 +232,7 @@ internal static class InputTests
         CheckBrowserDrop(checks);
         CheckClipboardFlip(checks);
         CheckWatchFolders(checks);
+        RegressionTests.Check(checks);
         CheckScenarioMatrix(checks);
         CheckLocalization(checks);
         CheckDocxDocumentFidelityAndPdfA(checks);

@@ -1,0 +1,4 @@
+LIBRARY FlipShell
+EXPORTS
+    DllGetClassObject PRIVATE
+    DllCanUnloadNow PRIVATE

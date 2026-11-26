@@ -1009,67 +1009,73 @@ public sealed class MergePdfQuickTool : IQuickTool
 
     private static void WriteMergedPdf(string outPath, string[] inputs, QuickToolContext context)
     {
-        using var stream = new FileStream(outPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-        using var document = SKDocument.CreatePdf(stream) ?? throw new IOException(Loc.T("Encoder PDF non disponibile.", "PDF encoder unavailable."));
-
         string pageSize = context.Parameters.GetValueOrDefault("page_size", "original");
         bool preserveOriginal = string.Equals(pageSize, "original", StringComparison.OrdinalIgnoreCase);
         var forced = preserveOriginal ? A4Portrait : ParsePageSize(pageSize);
+        var documents = new List<byte[]>(inputs.Length);
 
         for (int i = 0; i < inputs.Length; i++)
         {
             context.CancellationToken.ThrowIfCancellationRequested();
             string path = inputs[i];
-
             string ext = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
 
-            if (ext == "pdf")
+            if (ext == "pdf" && preserveOriginal)
             {
-                // Ogni pagina PDF mantiene le proprie dimensioni e il proprio orientamento.
+                // Copia le pagine intatte: testo, vettori, dimensioni e orientamento restano invariati.
+                documents.Add(File.ReadAllBytes(path));
+            }
+            else if (ext == "pdf")
+            {
+                // Con un formato pagina forzato i PDF vengono rasterizzati sul nuovo foglio.
                 byte[] pdfBytes = File.ReadAllBytes(path);
-                var sizes = preserveOriginal ? ReadPdfPageSizes(path) : [];
                 var images = PDFtoImage.Conversion.ToImages(pdfBytes, options: new PDFtoImage.RenderOptions(Dpi: 144));
-                int pageIndex = 0;
-                foreach (var bmp in images)
+                documents.Add(BuildPages(document =>
                 {
-                    using (bmp)
+                    foreach (var bmp in images)
                     {
-                        context.CancellationToken.ThrowIfCancellationRequested();
-                        var size = preserveOriginal
-                            ? (pageIndex < sizes.Count
-                                ? sizes[pageIndex]
-                                : new PageSizePt(bmp.Width * 72f / 144f, bmp.Height * 72f / 144f))
-                            : forced;
-                        pageIndex++;
-                        DrawImagePage(document, bmp, size.Width, size.Height, 0);
+                        using (bmp)
+                        {
+                            context.CancellationToken.ThrowIfCancellationRequested();
+                            DrawImagePage(document, bmp, forced.Width, forced.Height, 30);
+                        }
                     }
-                }
+                }));
             }
             else if (ext is "png" or "jpg" or "jpeg" or "webp" or "bmp" or "gif" or "tiff")
             {
-                byte[] imgBytes = File.ReadAllBytes(path);
-                using var bmp = SKBitmap.Decode(imgBytes)
-                    ?? throw new IOException(Loc.F("Immagine non decodificabile: {0}", "Unable to decode image: {0}", path));
-                var size = preserveOriginal ? A4Portrait : forced;
-                DrawImagePage(document, bmp, size.Width, size.Height, 30);
+                documents.Add(BuildPages(document =>
+                {
+                    using var bmp = BuiltInQuickTools.LoadOrientedBitmap(path);
+                    var size = preserveOriginal ? A4Portrait : forced;
+                    DrawImagePage(document, bmp, size.Width, size.Height, 30);
+                }));
             }
             else if (ext is "txt" or "md" or "csv")
             {
-                string text = File.ReadAllText(path, Encoding.UTF8);
+                string text = TextFiles.Read(path);
                 var size = preserveOriginal ? A4Portrait : forced;
-                DrawTextPages(document, text, size.Width, size.Height, 30);
+                documents.Add(BuildPages(document => DrawTextPages(document, text, size.Width, size.Height, 30)));
             }
-
             else
             {
                 throw new IOException(Loc.F("Formato non supportato per l'unione PDF: {0}", "Unsupported format for PDF merge: {0}", ext));
             }
-
             context.Progress?.Report((double)(i + 1) / inputs.Length);
         }
 
-        document.Close();
-        stream.Flush(true);
+        PdfPages.Combine(documents, outPath, withoutMetadata: false, context.CancellationToken,
+            copied => context.Progress?.Report((double)copied / documents.Count));
+    }
+    private static byte[] BuildPages(Action<SKDocument> draw)
+    {
+        using var stream = new MemoryStream();
+        using (var document = SKDocument.CreatePdf(stream) ?? throw new IOException(Loc.T("Encoder PDF non disponibile.", "PDF encoder unavailable.")))
+        {
+            draw(document);
+            document.Close();
+        }
+        return stream.ToArray();
     }
 
     private static void DrawImagePage(SKDocument document, SKBitmap bitmap, float pageW, float pageH, float margin)
@@ -1088,6 +1094,22 @@ public sealed class MergePdfQuickTool : IQuickTool
         document.EndPage();
     }
 
+    /// <summary>Quanti caratteri entrano nella riga, andando a capo fra le parole quando possibile.</summary>
+    private static int WrapLength(string text, SKFont font, float width)
+    {
+        if (text.Length == 0 || font.MeasureText(text) <= width) return text.Length;
+        int low = 1, high = text.Length;
+        while (low < high)
+        {
+            int middle = (low + high + 1) / 2;
+            if (font.MeasureText(text[..middle]) <= width) low = middle;
+            else high = middle - 1;
+        }
+        int space = text.LastIndexOf(' ', low);
+        if (space > 0) return space;
+        return low > 1 && char.IsHighSurrogate(text[low - 1]) ? low - 1 : low;
+    }
+
     private static void DrawTextPages(SKDocument document, string text, float pageW, float pageH, float margin)
     {
         using var typeface = SKTypeface.FromFamilyName("Consolas");
@@ -1100,15 +1122,21 @@ public sealed class MergePdfQuickTool : IQuickTool
 
         foreach (string line in text.Replace("\r\n", "\n").Replace('\r', '\n').Split('\n'))
         {
-            if (y > pageH - margin)
+            string rest = line.Replace("\t", "    ");
+            do
             {
-                document.EndPage();
-                canvas = document.BeginPage(pageW, pageH);
-                canvas.Clear(SKColors.White);
-                y = margin + 15;
-            }
-            canvas.DrawText(line, margin, y, SKTextAlign.Left, font, paint);
-            y += 14;
+                if (y > pageH - margin)
+                {
+                    document.EndPage();
+                    canvas = document.BeginPage(pageW, pageH);
+                    canvas.Clear(SKColors.White);
+                    y = margin + 15;
+                }
+                int count = WrapLength(rest, font, pageW - 2 * margin);
+                canvas.DrawText(rest[..count], margin, y, SKTextAlign.Left, font, paint);
+                rest = rest[count..].TrimStart(' ');
+                y += 14;
+            } while (rest.Length > 0);
         }
 
         document.EndPage();
@@ -1389,31 +1417,44 @@ public sealed class TargetSizeQuickTool : IQuickTool
                 string name = $"{Path.GetFileNameWithoutExtension(inputPath)}_{sizeLabel}mb.{ext}";
                 string outPath = job.Stage(name);
 
-                if (ImageExts.Contains(ext))
+                if (VideoExts.Contains(ext) && new FileInfo(inputPath).Length <= targetBytes)
+                {
+                    // Già sotto la soglia: ricodificarlo peggiorerebbe solo la qualità.
+                    File.Copy(inputPath, outPath, overwrite: false);
+                }
+                else if (ImageExts.Contains(ext))
                 {
                     CompressImageToTarget(inputPath, outPath, ext, targetBytes, context.CancellationToken);
                 }
                 else if (VideoExts.Contains(ext))
                 {
-                    // Video via FFmpeg engine
                     var ffmpeg = new FfmpegEngine();
                     if (!ffmpeg.IsAvailable(context.Settings))
                         throw new IOException(Loc.T("Per la compressione video serve FFmpeg installato o configurato.", "FFmpeg must be installed or configured for video compression."));
 
-                    var convCtx = new ConversionContext
+                    // Il bitrate è una stima: se il risultato supera la soglia si riprova più basso.
+                    double budget = targetMb * 0.96;
+                    for (int attempt = 0; ; attempt++)
                     {
-                        InputFilePath = inputPath,
-                        OutputFilePath = outPath,
-                        SourceExtension = ext,
-                        TargetExtension = ext,
-                        Settings = context.Settings,
-                        Progress = context.Progress,
-                        CancellationToken = context.CancellationToken
-                    };
-                    convCtx.CustomParameters["target_mb"] = targetMb.ToString(CultureInfo.InvariantCulture);
+                        var convCtx = new ConversionContext
+                        {
+                            InputFilePath = inputPath,
+                            OutputFilePath = outPath,
+                            SourceExtension = ext,
+                            TargetExtension = ext,
+                            Settings = context.Settings,
+                            Progress = context.Progress,
+                            CancellationToken = context.CancellationToken
+                        };
+                        convCtx.CustomParameters["target_mb"] = budget.ToString(CultureInfo.InvariantCulture);
 
-                    var res = await ffmpeg.ConvertAsync(convCtx).ConfigureAwait(false);
-                    if (!res.Success) throw new IOException(res.ErrorMessage ?? Loc.T("Compressione video fallita.", "Video compression failed."));
+                        var res = await ffmpeg.ConvertAsync(convCtx).ConfigureAwait(false);
+                        context.CancellationToken.ThrowIfCancellationRequested();
+                        if (!res.Success) throw new IOException(res.ErrorMessage ?? Loc.T("Compressione video fallita.", "Video compression failed."));
+                        long produced = new FileInfo(outPath).Length;
+                        if (produced <= targetBytes || attempt == 3) break;
+                        budget *= Math.Min(0.9, 0.95 * targetBytes / produced);
+                    }
                 }
                 else
                 {
@@ -1988,37 +2029,7 @@ public sealed class PrivacyCleanQuickTool : IQuickTool
 
     private static void SanitizePdfMetadata(string inputPath, string outputPath, CancellationToken token)
     {
-        byte[] pdfBytes = File.ReadAllBytes(inputPath);
-        var metadata = new SKDocumentPdfMetadata
-        {
-            Title = "",
-            Author = "",
-            Subject = "",
-            Keywords = "",
-            Creator = "",
-            Producer = ""
-        };
-
-        using var outStream = new FileStream(outputPath, FileMode.CreateNew, FileAccess.Write, FileShare.None);
-        using var doc = SKDocument.CreatePdf(outStream, metadata)
-            ?? throw new IOException(Loc.T("Encoder PDF non disponibile.", "PDF encoder unavailable."));
-
-        var pages = PDFtoImage.Conversion.ToImages(pdfBytes, options: new PDFtoImage.RenderOptions(Dpi: 150, WithAspectRatio: true));
-        foreach (var pageBmp in pages)
-        {
-            using (pageBmp)
-            {
-                token.ThrowIfCancellationRequested();
-                var canvas = doc.BeginPage(pageBmp.Width, pageBmp.Height);
-                canvas.Clear(SKColors.White);
-                using var img = SKImage.FromBitmap(pageBmp);
-                canvas.DrawImage(img, 0, 0, new SKSamplingOptions(SKFilterMode.Linear));
-                doc.EndPage();
-            }
-        }
-
-        doc.Close();
-        outStream.Flush(true);
+        PdfPages.Combine([File.ReadAllBytes(inputPath)], outputPath, withoutMetadata: true, token);
     }
 }
 

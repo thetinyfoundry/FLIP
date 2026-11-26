@@ -169,6 +169,9 @@ public sealed class ArchiveEngine : IConversionEngine
                 case TarEntryType.RegularFile or TarEntryType.V7RegularFile or TarEntryType.ContiguousFile:
                     await WriteEntryAsync(root, entry.Name, entry.DataStream ?? Stream.Null, ct).ConfigureAwait(false);
                     break;
+                case TarEntryType.GlobalExtendedAttributes:
+                    // Commento generale dell'archivio (lo aggiunge GitHub): non è un file.
+                    break;
                 default:
                     throw new IOException($"Tipo di voce TAR non supportato: {entry.EntryType} ({entry.Name}).");
             }
@@ -315,7 +318,17 @@ public sealed class ArchiveEngine : IConversionEngine
 
         using var process = Process.Start(start) ?? throw new IOException("Impossibile avviare tar.exe.");
         var stderr = process.StandardError.ReadToEndAsync();
-        await process.WaitForExitAsync(ct).ConfigureAwait(false);
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        try { await process.WaitForExitAsync(ct).ConfigureAwait(false); }
+        catch (OperationCanceledException)
+        {
+            // Senza questa chiusura tar continuerebbe a scrivere e la cartella temporanea resterebbe sul disco.
+            try { process.Kill(entireProcessTree: true); }
+            catch (InvalidOperationException) { }
+            await process.WaitForExitAsync().ConfigureAwait(false);
+            throw;
+        }
+        finally { await Task.WhenAll(stderr, stdout).ConfigureAwait(false); }
         string error = await stderr.ConfigureAwait(false);
         if (process.ExitCode != 0)
             throw new IOException($"Compressione {format} fallita: {error.Trim()}");

@@ -110,7 +110,7 @@ public sealed class ImageEngine : IConversionEngine
 
     // ── Lettura Immagine ──────────────────────────────────────────────────────
 
-    private static SKBitmap LoadBitmap(string source)
+    internal static SKBitmap LoadBitmap(string source)
     {
         byte[] bytes = File.ReadAllBytes(source);
         using var data = SKData.CreateCopy(bytes);
@@ -123,8 +123,7 @@ public sealed class ImageEngine : IConversionEngine
                 throw new IOException("Immagine oltre il limite di sicurezza di 60 megapixel.");
             }
 
-            var decoded = new SKBitmap(new SKImageInfo(codec.Info.Width, codec.Info.Height, SKColorType.Bgra8888, SKAlphaType.Premul));
-            var result = codec.GetPixels(decoded.Info, decoded.GetPixels());
+            var result = ImagePixels.Decode(codec, out SKBitmap decoded);
             if (result != SKCodecResult.Success)
             {
                 decoded.Dispose();
@@ -144,10 +143,7 @@ public sealed class ImageEngine : IConversionEngine
             throw new IOException("Immagine oltre il limite di sicurezza di 60 megapixel.");
         }
 
-        var converted = new FormatConvertedBitmap(frame, PixelFormats.Bgra32, null, 0);
-        var bitmap = new SKBitmap(frame.PixelWidth, frame.PixelHeight, SKColorType.Bgra8888, SKAlphaType.Premul);
-        converted.CopyPixels(new System.Windows.Int32Rect(0, 0, frame.PixelWidth, frame.PixelHeight), bitmap.GetPixels(), bitmap.ByteCount, bitmap.RowBytes);
-        return bitmap;
+        return ImagePixels.FromWpf(frame);
     }
 
     private static SKBitmap FixOrientation(SKBitmap source, SKEncodedOrigin origin)
@@ -258,15 +254,8 @@ public sealed class ImageEngine : IConversionEngine
 
             case "jpg" or "jpeg":
                 // JPEG non supporta trasparenza: appiattisci su sfondo bianco
-                using (var flattened = new SKBitmap(bitmap.Width, bitmap.Height, SKColorType.Bgra8888, SKAlphaType.Opaque))
-                {
-                    using (var canvas = new SKCanvas(flattened))
-                    {
-                        canvas.Clear(SKColors.White);
-                        canvas.DrawBitmap(bitmap, 0, 0, new SKSamplingOptions());
-                    }
+                using (var flattened = ImagePixels.FlattenOnWhite(bitmap))
                     SaveSkiaImage(flattened, outputPath, SKEncodedImageFormat.Jpeg, quality);
-                }
                 break;
 
             case "webp":
@@ -308,24 +297,8 @@ public sealed class ImageEngine : IConversionEngine
         stream.Flush(true);
     }
 
-    private static void SaveWpfImage(SKBitmap bitmap, string path, BitmapEncoder encoder)
-    {
-        var source = BitmapSource.Create(
-            bitmap.Width,
-            bitmap.Height,
-            96,
-            96,
-            PixelFormats.Bgra32,
-            null,
-            bitmap.GetPixels(),
-            bitmap.ByteCount,
-            bitmap.RowBytes);
-
-        encoder.Frames.Add(BitmapFrame.Create(source));
-        using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None);
-        encoder.Save(file);
-        file.Flush(true);
-    }
+    private static void SaveWpfImage(SKBitmap bitmap, string path, BitmapEncoder encoder) =>
+        ImagePixels.SaveWithWpf(bitmap, path, encoder, FileMode.Create);
 
     // ── Generatore Binario Nativo ICO Multi-Size ──────────────────────────────
 
@@ -346,7 +319,11 @@ public sealed class ImageEngine : IConversionEngine
                 using (var canvas = new SKCanvas(scaled))
                 {
                     canvas.Clear(SKColors.Transparent);
-                    canvas.DrawBitmap(source, new SKRect(0, 0, size, size), new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.Linear));
+                    // Le icone sono quadrate: un'immagine rettangolare va centrata, non deformata.
+                    float scale = Math.Min((float)size / source.Width, (float)size / source.Height);
+                    float w = source.Width * scale, h = source.Height * scale;
+                    canvas.DrawBitmap(source, new SKRect((size - w) / 2, (size - h) / 2, (size + w) / 2, (size + h) / 2),
+                        new SKSamplingOptions(SKFilterMode.Linear, SKMipmapMode.Linear));
                 }
 
                 using var img = SKImage.FromBitmap(scaled);

@@ -116,6 +116,8 @@ public sealed class SettingsStore
             if (!fields.Contains(nameof(FlipSettings.GestureEnabled))) imported.GestureEnabled = _settings.GestureEnabled;
             if (!fields.Contains(nameof(FlipSettings.Language))) imported.Language = _settings.Language;
             if (!fields.Contains(nameof(FlipSettings.TriggerKey))) imported.TriggerKey = _settings.TriggerKey;
+            if (!fields.Contains(nameof(FlipSettings.HoldToOpenEnabled))) imported.HoldToOpenEnabled = _settings.HoldToOpenEnabled;
+            if (!fields.Contains(nameof(FlipSettings.HoldToOpenMilliseconds))) imported.HoldToOpenMilliseconds = _settings.HoldToOpenMilliseconds;
             imported.LegacyPreferencesMigrated = true;
             AddNewBackSideTools(imported, fields);
             SaveToDisk(imported);
@@ -249,18 +251,28 @@ public sealed class SettingsStore
     }
 
     /// <summary>
-    /// Le impostazioni salvate prima della v0.6.0 non conoscono "Turntable 360°":
-    /// lo aggiunge una sola volta, riconoscendo i file privi di BackSideToolsRevision.
+    /// Aggiunge una sola volta gli strumenti introdotti nelle versioni successive, senza
+    /// riattivare quelli che l'utente ha disattivato esplicitamente.
     /// </summary>
     internal static bool AddNewBackSideTools(FlipSettings settings, HashSet<string> fields)
     {
-        if (!fields.Contains(nameof(FlipSettings.EnabledBackSideTools)) ||
-            fields.Contains(nameof(FlipSettings.BackSideToolsRevision)))
-            return false;
+        if (!fields.Contains(nameof(FlipSettings.EnabledBackSideTools))) return false;
+
+        int revision = fields.Contains(nameof(FlipSettings.BackSideToolsRevision))
+            ? settings.BackSideToolsRevision
+            : 0;
+        if (revision >= FlipSettings.CurrentBackSideToolsRevision) return false;
+
+        if (revision < 1 && !settings.EnabledBackSideTools.Contains("turntable_3d", StringComparer.OrdinalIgnoreCase))
+            settings.EnabledBackSideTools.Add("turntable_3d");
+        if (revision < 2 && !settings.EnabledBackSideTools.Contains("pack_rar", StringComparer.OrdinalIgnoreCase))
+        {
+            int zipIndex = settings.EnabledBackSideTools.FindIndex(id => id.Equals("pack_zip", StringComparison.OrdinalIgnoreCase));
+            if (zipIndex >= 0) settings.EnabledBackSideTools.Insert(zipIndex + 1, "pack_rar");
+            else settings.EnabledBackSideTools.Add("pack_rar");
+        }
 
         settings.BackSideToolsRevision = FlipSettings.CurrentBackSideToolsRevision;
-        if (!settings.EnabledBackSideTools.Contains("turntable_3d", StringComparer.OrdinalIgnoreCase))
-            settings.EnabledBackSideTools.Add("turntable_3d");
         return true;
     }
 

@@ -230,6 +230,7 @@ internal sealed class Host : Window, IDisposable
     readonly Application app;
     readonly string[] args;
     readonly Forms.NotifyIcon tray;
+    readonly ToastWindow toastWindow;
     readonly Forms.ToolStripItem openFlipItem;
     readonly Forms.ToolStripItem quickConvertItem;
     readonly Forms.ToolStripItem multiFileItem;
@@ -247,10 +248,19 @@ internal sealed class Host : Window, IDisposable
     readonly Forms.ToolStripItem exitItem;
     readonly CancellationTokenSource lifetime = new();
     readonly SettingsStore settingsStore = SettingsStore.Current;
+    static readonly HashSet<string> InstallableEngineIds = new(StringComparer.OrdinalIgnoreCase)
+        { "ffmpeg", "pandoc", "libreoffice", "calibre", "whisper" };
+    bool HoldListeningWanted => raw && settingsStore.Settings.GestureEnabled && settingsStore.Settings.HoldToOpenEnabled;
     readonly AppPreferences preferences = AppPreferences.Load();
     readonly WheelSound sound;
     readonly DispatcherTimer release = new() { Interval = TimeSpan.FromMilliseconds(500) };
     readonly DispatcherTimer watchdog = new() { Interval = TimeSpan.FromMilliseconds(400) };
+    readonly DispatcherTimer holdTimer = new() { Interval = TimeSpan.FromMilliseconds(50) };
+    HoldToOpenGate holdGate = new(3000);
+    long holdStartedTick;
+    int holdDurationMs = 3000;
+    bool holdRingShown;
+    long suppressRightUpUntil;
     long dragOpenedTick;
     long dragReleasedTick;
     ShortcutHook? shortcutHook;
@@ -278,6 +288,7 @@ internal sealed class Host : Window, IDisposable
         sound = new WheelSound(preferences.SoundEnabled);
         int key = Array.IndexOf(args, "--trigger"); if (key >= 0) SetTrigger(Program.OptionValue(args, "--trigger"));
         tray = new Forms.NotifyIcon { Icon = new System.Drawing.Icon(Path.Combine(AppContext.BaseDirectory, "Flip.ico")), Text = Program.ReleaseTitle, Visible = true };
+        toastWindow = new ToastWindow();
         var menu = new Forms.ContextMenuStrip
         {
             BackColor = System.Drawing.Color.FromArgb(26, 28, 35),
@@ -354,6 +365,24 @@ internal sealed class Host : Window, IDisposable
                 DismissWheel(false, resetInputState: true);
         };
         watchdog.Tick += (_, _) => OnWatchdogTick();
+        holdTimer.Tick += (_, _) =>
+        {
+            // Controlla il tempo reale a ogni tick: un primo tick arrivato prima
+            // della soglia non deve interrompere il gesto.
+            long elapsed = Environment.TickCount64 - holdStartedTick;
+            if (!holdRingShown && elapsed >= 500)
+            {
+                HoldProgressWindow.Begin();
+                holdRingShown = true;
+            }
+            if (holdRingShown) HoldProgressWindow.Update((double)elapsed / holdDurationMs);
+            if (!holdGate.IsDue(Environment.TickCount64)) return;
+            holdTimer.Stop();
+            holdGate.Cancel();
+            HoldProgressWindow.End();
+            holdRingShown = false;
+            ActivateHoldToOpen();
+        };
     }
 
     void ApplyTrayLocalization()
@@ -383,6 +412,7 @@ internal sealed class Host : Window, IDisposable
         wheelShortcut = WheelShortcut.Parse(value);
         shortcutHook?.Reset();
         shortcutOrder.Reset();
+        CancelHoldToOpen("trigger-changed");
         if (wheel == null) SetMouseListening(false);
     }
     void ApplyShortcut(string value)
@@ -427,6 +457,10 @@ internal sealed class Host : Window, IDisposable
                 RemoveRaw();
                 if (wheel?.IsDragMode == true) wheel.Dismiss("gesture-disabled");
             }
+            bool holdEnabled = settingsStore.CreateSnapshot().HoldToOpenEnabled;
+            if (!current.GestureEnabled || !holdEnabled) CancelHoldToOpen("settings-changed");
+            if (current.GestureEnabled && holdEnabled) SetMouseListening(true);
+            else if (wheel?.IsDragMode != true) SetMouseListening(false);
             SyncGazeAccessibility();
         }
         finally { syncingTray = false; }
@@ -486,6 +520,7 @@ internal sealed class Host : Window, IDisposable
         FirstRunWelcomeWindow.TrayNotifier = Toast;
         hwnd = new WindowInteropHelper(this).Handle; source = HwndSource.FromHwnd(hwnd); source.AddHook(Messages);
         if (preferences.GestureEnabled) RegisterRaw();
+        if (raw && settingsStore.CreateSnapshot().HoldToOpenEnabled) SetMouseListening(true);
         settingsStore.SettingsChanged += OnSettingsChanged;
         Loc.LanguageChanged += OnLanguageChanged;
         SyncGazeAccessibility();
@@ -610,6 +645,7 @@ internal sealed class Host : Window, IDisposable
 
     void DismissWheel(bool allowCommit = false, bool resetInputState = false)
     {
+        CancelHoldToOpen("dismiss");
         var current = wheel;
         if (current == null || current.IsConverting || busy) return;
         release.Stop();
@@ -618,7 +654,8 @@ internal sealed class Host : Window, IDisposable
         if (resetInputState)
         {
             shortcutOrder.Reset();
-            SetMouseListening(false);
+            if (!HoldListeningWanted)
+                SetMouseListening(false);
         }
         if (allowCommit && current.IsVisible)
         {
@@ -663,8 +700,9 @@ internal sealed class Host : Window, IDisposable
             DismissWheel(false, resetInputState: true);
     }
 
-    void Open(string[] files, bool dragging, FlipSettings? customSettings = null, Action? onWheelClosed = null, bool stickyGaze = false)
+    void Open(string[] files, bool dragging, FlipSettings? customSettings = null, Action? onWheelClosed = null, bool stickyGaze = false, bool allowFolders = false)
     {
+        CancelHoldToOpen("wheel-open");
         if (exiting || busy) { if (busy) Toast(Loc.T("Conversione in corso. Attendi il completamento.", "A conversion is already running. Please wait.")); return; }
         if (wheel != null)
         {
@@ -673,7 +711,9 @@ internal sealed class Host : Window, IDisposable
         }
         if (!dragging)
         {
-            files = Policy.ReadFiles(new DataObject(DataFormats.FileDrop, files));
+            files = allowFolders
+                ? files.Where(p => File.Exists(p) || Directory.Exists(p)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray()
+                : Policy.ReadFiles(new DataObject(DataFormats.FileDrop, files));
             if (files.Length == 0) { Toast(Loc.T("Seleziona file locali disponibili.", "Select available local files.")); return; }
         }
         var snapshot = (customSettings ?? settingsStore.CreateSnapshot()).CreateSnapshot();
@@ -687,7 +727,9 @@ internal sealed class Host : Window, IDisposable
         {
             onWheelClosed?.Invoke();
             if (!ReferenceEquals(wheel, createdWheel)) return;
-            wheel = null; release.Stop(); watchdog.Stop(); dragReleasedTick = 0; shortcutOrder.Reset(); SetMouseListening(false);
+            wheel = null; release.Stop(); watchdog.Stop(); dragReleasedTick = 0; shortcutOrder.Reset();
+            if (!HoldListeningWanted)
+                SetMouseListening(false);
             gazeOrb?.SetSuspended(busy);
             UpdateScreenEdgeAura();
         };
@@ -786,8 +828,63 @@ internal sealed class Host : Window, IDisposable
         UpdateScreenEdgeAura();
     }
 
-    void StartRoutedJob(string[] files, string format, FlipSettings snapshot)
+    async void StartRoutedJob(string[] files, string format, FlipSettings snapshot)
     {
+        if (busy || exiting)
+        {
+            wheel?.CompleteConversion(false);
+            return;
+        }
+
+        string[] sourceExtensions = files.Select(path => Path.GetExtension(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+        while (!busy && !exiting)
+        {
+            bool reachable = RoutePlanner.GetReachableTargetFormats(sourceExtensions, snapshot)
+                .Any(candidate => string.Equals(candidate.Extension, format, StringComparison.OrdinalIgnoreCase));
+            string? missingEngine = reachable ? null : RoutePlanner.FindMissingInstallableEngine(
+                sourceExtensions, format, snapshot, InstallableEngineIds);
+            if (missingEngine == null) break;
+
+            var engine = RoutePlanner.GetRegisteredEngines().FirstOrDefault(item => item.Id == missingEngine);
+            string displayName = engine?.DisplayName ?? missingEngine;
+            bool accept = SettingsHubWindow.Confirm(
+                Loc.T("Motore mancante", "Missing engine"),
+                Loc.F("Per convertire in {0} serve {1}, che non risulta installato. Vuoi installarlo adesso?",
+                      "Converting to {0} requires {1}, which is not installed. Install it now?",
+                      format.ToUpperInvariant(), displayName),
+                Loc.T("Installa", "Install"),
+                wheel);
+            if (!accept || exiting)
+            {
+                wheel?.CompleteConversion(false, Loc.F("Installazione di {0} annullata.", "Installation of {0} canceled.", displayName));
+                return;
+            }
+
+            Toast(Loc.F("Installazione di {0} in corso…", "Installing {0}…", displayName));
+            try
+            {
+                await Task.Run(() => EngineInstaller.InstallAsync(missingEngine, null, lifetime.Token), lifetime.Token);
+                CliResolver.VerifyAndDetectEngines(settingsStore);
+                if (exiting) { wheel?.CompleteConversion(false); return; }
+                snapshot = settingsStore.CreateSnapshot();
+                Toast(Loc.F("{0} pronto. Verifica il prossimo passaggio…", "{0} ready. Checking the next step…", displayName));
+            }
+            catch (OperationCanceledException)
+            {
+                wheel?.CompleteConversion(false, Loc.T("Installazione annullata.", "Installation canceled."));
+                return;
+            }
+            catch (Exception ex)
+            {
+                string message = Loc.F("Installazione di {0} non riuscita: {1}", "Failed to install {0}: {1}", displayName, ex.Message);
+                wheel?.CompleteConversion(false, message);
+                Toast(message);
+                Evidence.Log("engine.install.error", ex.ToString());
+                return;
+            }
+        }
+
         if (busy || exiting)
         {
             wheel?.CompleteConversion(false);
@@ -1277,7 +1374,15 @@ internal sealed class Host : Window, IDisposable
         }
     }
 
-    internal void Toast(string text) { if (disposed) return; tray.BalloonTipTitle = "Flip"; tray.BalloonTipText = text.Length > 250 ? text[..250] : text; tray.ShowBalloonTip(5000); Evidence.Log("notice", text); }
+    internal void Toast(string text)
+    {
+        if (disposed || string.IsNullOrWhiteSpace(text)) return;
+        tray.BalloonTipTitle = "Flip";
+        tray.BalloonTipText = text.Length > 250 ? text[..250] : text;
+        tray.ShowBalloonTip(5000);
+        Evidence.Log("notice", text);
+        Dispatcher.BeginInvoke(() => toastWindow.ShowMessage(text));
+    }
     async void Exit()
     {
         if (exiting) return; exiting = true; job?.Cancel(); wheel?.Dismiss("exit"); activePreview?.Close();
@@ -1319,12 +1424,81 @@ internal sealed class Host : Window, IDisposable
                         Dispatcher.BeginInvoke(DispatcherPriority.Normal, () => TriggerClipboardFlip());
                     },
                     canClipboardFlip: () => raw && !busy && !exiting && !settingsOpen && !Native.IsDragButtonHeld);
+                if (settingsStore.CreateSnapshot().HoldToOpenEnabled) SetMouseListening(true);
                 Evidence.Log("shortcut.hook.registered", new { triggerName, scope = "Drag anywhere or Explorer/Desktop" });
             }
             catch (Exception ex) { RemoveRaw(); gestureItem.Checked = false; Toast(ex.Message); return; }
         }
         if (!raw) Toast(Loc.T("Gesto non disponibile: usa il menu dell'icona.", "Gesture unavailable: use the tray icon menu."));
     }
+    /// <summary>Contesto in cui la pressione prolungata può aprire la ruota.</summary>
+    bool HoldToOpenEligible()
+    {
+        var settings = settingsStore.CreateSnapshot();
+        return settings.GestureEnabled && settings.HoldToOpenEnabled && raw && !busy && !exiting &&
+            !settingsOpen && wheel == null && ShortcutHook.IsExplorerForeground() && !ShortcutHook.ModifiersHeld();
+    }
+
+    void ArmHoldToOpen(int x, int y)
+    {
+        if (!HoldToOpenEligible())
+        {
+            var s = settingsStore.CreateSnapshot();
+            Evidence.Log("hold.skip", new
+            {
+                enabled = s.HoldToOpenEnabled,
+                gesture = s.GestureEnabled,
+                raw,
+                busy,
+                exiting,
+                settingsOpen,
+                wheel = wheel != null,
+                explorer = ShortcutHook.IsExplorerForeground(),
+                modifiers = ShortcutHook.ModifiersHeld(),
+                mouseListening
+            });
+            return;
+        }
+        int ms = Math.Clamp(settingsStore.Settings.HoldToOpenMilliseconds, 1000, 8000);
+        holdDurationMs = ms;
+        holdGate = new HoldToOpenGate(ms);
+        holdStartedTick = Environment.TickCount64;
+        holdGate.MouseDown(x, y, holdStartedTick);
+        holdRingShown = false;
+        holdTimer.Stop();
+        holdTimer.Start();
+        Evidence.Log("hold.arm", new { ms, x, y });
+    }
+
+    void CancelHoldToOpen(string reason)
+    {
+        if (!holdTimer.IsEnabled) return;
+        holdTimer.Stop();
+        holdGate.Cancel();
+        HoldProgressWindow.End();
+        holdRingShown = false;
+        Evidence.Log("hold.cancel", new { reason });
+    }
+
+    void ActivateHoldToOpen()
+    {
+        if (!HoldToOpenEligible()) return;
+        var files = GazeOrbWindow.CaptureSelectedFiles(allowClipboardFallback: false, allowFolders: true);
+        if (files.Length == 0)
+        {
+            Toast(Loc.T(
+                "Nessun file selezionato: seleziona un file in Esplora File o sul Desktop, poi tieni premuto il click.",
+                "No selected file: select a file in File Explorer or on the Desktop, then hold the mouse button."));
+            return;
+        }
+        Evidence.Log("hold.activate", new { count = files.Length, elapsedMs = Environment.TickCount64 - holdStartedTick });
+        Open(files, dragging: false, allowFolders: true);
+        // La ruota si apre sotto il cursore mentre il pulsante è ancora premuto:
+        // il rilascio non deve essere interpretato come scelta di un formato.
+        wheel?.SuppressPointerUpFor(800);
+        suppressRightUpUntil = Environment.TickCount64 + 800;
+    }
+
     void ActivateWheelShortcut()
     {
         bool held = Native.IsDragButtonHeld;
@@ -1337,10 +1511,12 @@ internal sealed class Host : Window, IDisposable
     }
     void ShortcutKeyChanged(bool down)
     {
+        if (down) CancelHoldToOpen("trigger-key");
         if (!down)
         {
             shortcutOrder.KeyUp();
-            if (wheel == null) SetMouseListening(false);
+            if (wheel == null && !HoldListeningWanted)
+                SetMouseListening(false);
             return;
         }
         if (!raw || busy || exiting || settingsOpen || ShortcutHook.ModifiersHeld()
@@ -1353,7 +1529,9 @@ internal sealed class Host : Window, IDisposable
     {
         if (mouseListening == value) return;
         var devices = new[] { new Native.Device { Page = 1, Usage = 2, Flags = value ? 0x100u : 1u, Target = value ? hwnd : 0 } };
-        if (Native.RegisterRawInputDevices(devices, 1, (uint)Marshal.SizeOf<Native.Device>())) mouseListening = value;
+        bool ok = Native.RegisterRawInputDevices(devices, 1, (uint)Marshal.SizeOf<Native.Device>());
+        Evidence.Log("mouse.listen", new { value, ok, hwnd, mouseListeningBefore = mouseListening });
+        if (ok) mouseListening = value;
     }
     void RemoveRaw()
     {
@@ -1380,8 +1558,10 @@ internal sealed class Host : Window, IDisposable
                 {
                     if (key.VKey == 0x1B)
                     {
+                        CancelHoldToOpen("escape");
                         shortcutOrder.Reset();
-                        if (wheel == null) SetMouseListening(false);
+                        if (wheel == null && !HoldListeningWanted)
+                            SetMouseListening(false);
                         Dispatcher.BeginInvoke(() => wheel?.Dismiss("escape"));
                     }
                     else if (key.VKey == 0x20 && wheel is { IsDragMode: false, IsStickyGaze: true, IsVisible: true, IsConverting: false })
@@ -1401,13 +1581,43 @@ internal sealed class Host : Window, IDisposable
                 if (size < hs + 8) return 0;
                 ushort flags = unchecked((ushort)Marshal.ReadInt16(data, 4));
                 const ushort mouseWheel = 0x0400;
-                if ((flags & mouseWheel) != 0 && Native.IsDragButtonHeld)
+                // In drag mode la ruota non riceve gli eventi WPF (mouse catturato da Esplora File):
+                // il delta arriva qui. Nelle ruote non-drag lo gestisce direttamente Wheel.PreviewMouseWheel.
+                if ((flags & mouseWheel) != 0 && Native.IsDragButtonHeld && wheel is { IsDragMode: true })
                     wheel?.HandleDragScroll(Marshal.ReadInt16(data, 6));
                 bool swapped = Native.ButtonsSwapped;
                 Native.GetCursorPos(out var cursor);
-                if (Native.PrimaryDown(flags, swapped)) shortcutOrder.MouseDown(cursor.X, cursor.Y);
-                if (Native.PrimaryUp(flags, swapped)) { shortcutOrder.MouseUp(); if (wheel?.IsDragMode == true) { release.Stop(); release.Start(); } else if (!shortcutOrder.Held) SetMouseListening(false); }
-                else if (shortcutOrder.Move(cursor.X, cursor.Y)) ActivateWheelShortcut();
+                if (Native.PrimaryDown(flags, swapped))
+                {
+                    Evidence.Log("raw.mouse.down", new { flags, swapped, cursor });
+                    shortcutOrder.MouseDown(cursor.X, cursor.Y);
+                    ArmHoldToOpen(cursor.X, cursor.Y);
+                }
+                if (Native.PrimaryUp(flags, swapped))
+                {
+                    CancelHoldToOpen("mouse-up");
+                    shortcutOrder.MouseUp();
+                    // Tasto destro: chiude la ruota se non è in conversione né in drag.
+                    // Il primo rilascio dopo l'apertura con pressione prolungata va ignorato.
+                    if ((flags & 0x0008) != 0)
+                    {
+                        if (Environment.TickCount64 < suppressRightUpUntil) suppressRightUpUntil = 0;
+                        else if (!busy && wheel is { IsConverting: false, IsDragMode: false })
+                            Dispatcher.BeginInvoke(() => DismissWheel(false));
+                    }
+                    if (wheel?.IsDragMode == true) { release.Stop(); release.Start(); }
+                    else if (!shortcutOrder.Held && !HoldListeningWanted)
+                        SetMouseListening(false);
+                }
+                else
+                {
+                    if (holdTimer.IsEnabled)
+                    {
+                        holdGate.Move(cursor.X, cursor.Y);
+                        if (!holdGate.IsArmed) CancelHoldToOpen("move");
+                    }
+                    if (shortcutOrder.Move(cursor.X, cursor.Y)) ActivateWheelShortcut();
+                }
             }
         }
         catch (Exception ex) { Evidence.Log("input.error", ex.Message); }
@@ -1416,7 +1626,7 @@ internal sealed class Host : Window, IDisposable
     }
     public void Dispose()
     {
-        if (disposed) return; disposed = true; lifetime.Cancel(); job?.Cancel(); release.Stop(); watchdog.Stop(); RemoveRaw();
+        if (disposed) return; disposed = true; lifetime.Cancel(); job?.Cancel(); release.Stop(); watchdog.Stop(); CancelHoldToOpen("dispose"); HoldProgressWindow.End(); RemoveRaw();
         watchFolderService?.Dispose(); watchFolderService = null;
         settingsStore.SettingsChanged -= Program.SyncDragButtonPreference;
         settingsStore.SettingsChanged -= OnSettingsChanged;
@@ -1426,7 +1636,7 @@ internal sealed class Host : Window, IDisposable
         SettingsHubWindow.CloseSingleton();
         FirstRunWelcomeWindow.CloseSingleton();
         gazeOrb?.Close(); gazeOrb = null;
-        wheel?.Close(); sound.Dispose(); tray.Visible = false; tray.ContextMenuStrip?.Dispose(); tray.Dispose(); lifetime.Dispose(); Evidence.Log("host.stop");
+        wheel?.Close(); toastWindow.CloseToast(); sound.Dispose(); tray.Visible = false; tray.ContextMenuStrip?.Dispose(); tray.Dispose(); lifetime.Dispose(); Evidence.Log("host.stop");
     }
 
     sealed class TrayColors : Forms.ProfessionalColorTable

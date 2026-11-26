@@ -289,8 +289,9 @@ public static class WheelStudioSection
         [
             ("crop", Loc.T("Ritaglia", "Crop"), Loc.T("Manuale, 9:16, 4:5, 1:1, 16:9 e 9:16 sfocato", "Manual, 9:16, 4:5, 1:1, 16:9, and blurred 9:16")),
             ("rotate", Loc.T("Ruota e specchia", "Rotate & flip"), Loc.T("90°, 180° e ribaltamento", "90°, 180°, and mirror flips")),
-            ("merge_pdf", Loc.T("Unisci in PDF", "Merge PDF"), Loc.T("Più file in un unico PDF", "Combine multiple files into one PDF")),
+            ("merge_pdf", Loc.T("Unisci in PDF", "Merge PDF"), Loc.T("Dimensioni originali; con A scegli A4/A3", "Original size; press A for A4/A3")),
             ("pack_zip", Loc.T("Comprimi in ZIP", "Pack ZIP"), Loc.T("Un archivio con i file selezionati", "Archive selected files into one ZIP")),
+            ("pack_rar", "RAR", Loc.T("Richiede WinRAR installato", "Requires WinRAR to be installed")),
             ("target_size", Loc.T("Peso massimo", "Target size"), Loc.T("Comprime entro 8, 25 o 50 MB", "Compress under 8, 25, or 50 MB")),
             ("remove_bg", Loc.T("Rimuovi sfondo", "Remove background"), Loc.T("Scontorno con IA locale", "Local AI background removal")),
             ("ocr", Loc.T("Estrai testo", "Extract text"), Loc.T("OCR nativo di Windows", "Local OCR text extraction")),

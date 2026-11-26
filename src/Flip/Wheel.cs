@@ -94,6 +94,28 @@ internal sealed class Wheel : Window
         TextWrapping = TextWrapping.Wrap,
         IsHitTestVisible = false
     };
+    readonly TextBlock toolNoticeText = new()
+    {
+        MaxWidth = 268,
+        TextAlignment = TextAlignment.Center,
+        TextWrapping = TextWrapping.Wrap,
+        Foreground = Brushes.White,
+        FontSize = 12,
+        LineHeight = 16,
+        IsHitTestVisible = false
+    };
+    readonly Border toolNotice = new()
+    {
+        Width = 292,
+        Visibility = Visibility.Collapsed,
+        IsHitTestVisible = false,
+        Background = new SolidColorBrush(Color.FromArgb(238, 20, 22, 25)),
+        BorderBrush = new SolidColorBrush(FlipAccent),
+        BorderThickness = new Thickness(1),
+        CornerRadius = new CornerRadius(12),
+        Padding = new Thickness(12, 8, 12, 8)
+    };
+    readonly DispatcherTimer toolNoticeTimer = new() { Interval = TimeSpan.FromMilliseconds(3800) };
     /// <summary>Pillola "Formati · Strumenti" nella parte bassa del cerchio centrale (coordinate canvas, raggio ≤ 88 &lt; 98 degli spicchi).</summary>
     internal static readonly Rect FacePillRect = new(150, 250, 120, 22);
     const double CenterTextLeft = 135, CenterTextWidth = 150, CenterTextTop = 152;
@@ -135,6 +157,7 @@ internal sealed class Wheel : Window
     string[] validatedDragFiles = [];
     int scrollDelta;
     readonly Dictionary<string, int> toolPresets = new(StringComparer.OrdinalIgnoreCase);
+    readonly Dictionary<string, string> toolUnavailableReasons = new(StringComparer.OrdinalIgnoreCase);
 
     static bool TryGetPreset(string toolId, out (string Key, string[] Values, string[] Labels) preset)
     {
@@ -148,6 +171,10 @@ internal sealed class Wheel : Window
                 return true;
             case "target_size":
                 preset = ("target_mb", ["8", "25", "50"], ["8 MB", "25 MB", "50 MB"]);
+                return true;
+            case "merge_pdf":
+                preset = ("page_size", ["original", "a4p", "a4l", "a3p", "a3l"],
+                    [Loc.T("Originale", "Original"), "A4 · P", "A4 · L", "A3 · P", "A3 · L"]);
                 return true;
             default:
                 preset = default;
@@ -238,6 +265,64 @@ internal sealed class Wheel : Window
         return new ToolActionQuickTool(action.Id, action.Description, action.Id);
     }
 
+    /// <summary>
+    /// Motivo per cui uno strumento rapido non è utilizzabile con la selezione corrente.
+    /// Una ragione non null rende lo spicchio semi-trasparente e, se cliccato, mostra il messaggio.
+    /// </summary>
+    internal static string? ToolUnavailableReason(string toolId, IReadOnlyList<string> files, FlipSettings settings)
+    {
+        switch (toolId.ToLowerInvariant())
+        {
+            case "merge_pdf":
+                return files.Count < 2
+                    ? Loc.T("Per unire in PDF seleziona almeno due file.", "Select at least two files to merge into PDF.")
+                    : null;
+            case "target_size":
+                if (files.Any(path => VideoToolExtensions.Contains(System.IO.Path.GetExtension(path).TrimStart('.'))) &&
+                    CliResolver.Resolve("ffmpeg", settings) == null)
+                    return Loc.T("Per comprimere video serve FFmpeg installato o configurato.", "FFmpeg must be installed or configured for video compression.");
+                return null;
+            case "waveform":
+                if (files.Any(path => !System.IO.Path.GetExtension(path).Equals(".wav", StringComparison.OrdinalIgnoreCase)) &&
+                    CliResolver.Resolve("ffmpeg", settings) == null)
+                    return Loc.T("Per l'onda sonora da formati compressi serve FFmpeg.", "FFmpeg is required to generate waveforms from compressed audio.");
+                return null;
+            case "ocr":
+                if (files.Any(path => !System.IO.Path.GetExtension(path).Equals(".pdf", StringComparison.OrdinalIgnoreCase)) &&
+                    CliResolver.Resolve("tesseract", settings) == null)
+                    return Loc.T("Per l'OCR sulle immagini serve Tesseract installato o configurato.", "Tesseract must be installed or configured for image OCR.");
+                return null;
+            case "remove_bg":
+                return OnnxRemoveBgEngine.IsModelInstalled(settings) ? null : OnnxRemoveBgEngine.MissingModelMessage;
+            default:
+                return null;
+        }
+    }
+
+    private static readonly HashSet<string> VideoToolExtensions = new(StringComparer.OrdinalIgnoreCase)
+        { "mp4", "mkv", "webm", "mov", "avi", "wmv", "flv" };
+
+    /// <summary>Ordina gli strumenti come nelle impostazioni, tenendo ZIP e RAR sempre vicini.</summary>
+    internal static IQuickTool[] OrderToolsForWheel(IEnumerable<IQuickTool> found, IReadOnlyList<string> preferredOrder)
+    {
+        var order = preferredOrder.ToList();
+        var list = found.OrderBy(tool =>
+        {
+            int index = order.FindIndex(id => id.Equals(tool.Id, StringComparison.OrdinalIgnoreCase));
+            return index < 0 ? int.MaxValue : index;
+        }).ToList();
+        int zip = list.FindIndex(tool => tool.Id.Equals("pack_zip", StringComparison.OrdinalIgnoreCase));
+        int rar = list.FindIndex(tool => tool.Id.Equals("pack_rar", StringComparison.OrdinalIgnoreCase));
+        if (zip >= 0 && rar >= 0 && rar != zip + 1)
+        {
+            var rarTool = list[rar];
+            list.RemoveAt(rar);
+            zip = list.FindIndex(tool => tool.Id.Equals("pack_zip", StringComparison.OrdinalIgnoreCase));
+            list.Insert(zip + 1, rarTool);
+        }
+        return list.ToArray();
+    }
+
     int WedgeCount => showingTools ? tools.Length : frontSlots.Length;
 
     int ChildCount(int index) => showingTools
@@ -245,6 +330,12 @@ internal sealed class Wheel : Window
         : (uint)index < (uint)frontSlots.Length ? frontSlots[index].Children.Length : 0;
     int selected = -1;
     bool dropping, closing, converting, packOutputIntoZip;
+    // L'ultimo mouse-up appartiene ancora al click tenuto premuto che ha aperto la ruota:
+    // non deve selezionare un settore. Usa un intervallo, non un flag persistente,
+    // così un rilascio fuori dalla finestra non blocca il clic successivo.
+    long suppressPointerUpUntil;
+    internal void SuppressPointerUpFor(int milliseconds) =>
+        suppressPointerUpUntil = Environment.TickCount64 + milliseconds;
     internal bool PackOutputIntoZip
     {
         get => packOutputIntoZip;
@@ -256,6 +347,21 @@ internal sealed class Wheel : Window
         }
     }
     internal string CenterCaptionText => center.Text;
+    internal string ToolNoticeText => toolNoticeText.Text;
+    internal bool ToolNoticeVisible => toolNotice.Visibility == Visibility.Visible;
+
+
+    /// <summary>Messaggio visibile dentro la ruota, oltre alla notifica di sistema, quando uno strumento non è utilizzabile.</summary>
+    void ShowToolNotice(string message)
+    {
+        if (string.IsNullOrWhiteSpace(message)) return;
+        toolNotice.BeginAnimation(UIElement.OpacityProperty, null);
+        toolNotice.Opacity = 1;
+        toolNoticeText.Text = message;
+        toolNotice.Visibility = Visibility.Visible;
+        toolNoticeTimer.Stop();
+        toolNoticeTimer.Start();
+    }
     double displayedPercent, targetPercent;
     string activeFormat = "";
     System.Windows.Shapes.Path? progressArc;
@@ -328,6 +434,17 @@ internal sealed class Wheel : Window
         surface.Children.Add(gazeBar);
         surface.Children.Add(rememberedFanLayer);
         surface.Children.Add(mixedGroupBar);
+        toolNotice.Child = toolNoticeText;
+        Canvas.SetLeft(toolNotice, 14);
+        Canvas.SetTop(toolNotice, 132);
+        surface.Children.Add(toolNotice);
+        toolNoticeTimer.Tick += (_, _) =>
+        {
+            toolNoticeTimer.Stop();
+            toolNotice.BeginAnimation(UIElement.OpacityProperty, null);
+            toolNotice.Opacity = 1;
+            toolNotice.Visibility = Visibility.Collapsed;
+        };
         Content = surface;
         gazePollTimer.Tick += (_, _) => OnGazePollTick();
         leaveTimer.Tick += (_, _) => TrackLeave();
@@ -348,6 +465,15 @@ internal sealed class Wheel : Window
             TrackLeave();
         };
         PreviewDrop += DropFiles;
+        // La rotella passa tra formati e strumenti anche quando la ruota non è in modalità drag
+        // (apertura con pressione prolungata, gaze o clic sulla pillola). In drag mode il delta
+        // arriva dall'input raw di Program.cs, che continua a gestirlo durante il trascinamento.
+        PreviewMouseWheel += (_, e) =>
+        {
+            if (!IsDragMode)
+                HandleDragScroll((short)Math.Clamp(e.Delta, short.MinValue, short.MaxValue));
+            e.Handled = true;
+        };
         PreviewKeyDown += (_, e) =>
         {
             if (e.Key == Key.Escape) Dismiss("escape-focused");
@@ -380,6 +506,11 @@ internal sealed class Wheel : Window
         MouseMove += (_, e) => { if (!dropping && !converting) TrackPointer(e.GetPosition(canvas)); };
         MouseLeftButtonUp += (_, e) =>
         {
+            if (Environment.TickCount64 < suppressPointerUpUntil)
+            {
+                suppressPointerUpUntil = 0;
+                return;
+            }
             if (dropping || converting) return;
             var point = e.GetPosition(canvas);
             if (IsOverFacePill(point))
@@ -388,6 +519,16 @@ internal sealed class Wheel : Window
                 return;
             }
             Choose(Hit(point), "click");
+        };
+        PreviewMouseRightButtonUp += (_, _) =>
+        {
+            if (Environment.TickCount64 < suppressPointerUpUntil)
+            {
+                suppressPointerUpUntil = 0;
+                return;
+            }
+            if (dropping || converting) return;
+            Dismiss("right-click");
         };
         MouseLeave += (_, _) => { if (!dropping) TrackLeave(); };
         Closed += (_, _) => { closing = true; CancelPendingOpenCascade(); gazePollTimer.Stop(); ClearGazeVisual(); progressTimer?.Stop(); leaveTimer.Stop(); facePillTimer.Stop(); };
@@ -399,7 +540,7 @@ internal sealed class Wheel : Window
         previousDragPaths = null;
         this.stickyGaze = stickyGaze;
         openedFromHost = true;
-        dropping = drag; converting = false; closing = false; packOutputIntoZip = false;
+        dropping = drag; converting = false; closing = false; packOutputIntoZip = false; scrollDelta = 0;
         gazeBar.Visibility = Visibility.Collapsed;
         if (!ScreenEdgeAuraWindow.Suppressed && playSound?.Target is WheelSound wheelSound)
             wheelSound.WarmUp();
@@ -590,10 +731,10 @@ internal sealed class Wheel : Window
 
     internal void HandleDragScroll(short delta)
     {
-        if (!CanUseDragCommand(WheelCommand.FlipFace)) return;
+        if (!CanFlipFace) return;
         scrollDelta += delta;
         if (Math.Abs(scrollDelta) >= 120)
-            HandleDragCommand(WheelCommand.FlipFace);
+            RequestFlipFace();
     }
 
     void SetPayload(string[] incoming)
@@ -634,13 +775,17 @@ internal sealed class Wheel : Window
             Evidence.Log("wheel.quicklook.lookup.error", ex.Message);
         }
         var extensions = GetSourceExtensions(activeFiles);
-        if (!sourceExtensions.SequenceEqual(extensions))
+        bool hasFolder = ContainsDirectory(activeFiles);
+        if (!sourceExtensions.SequenceEqual(extensions) || hasFolder)
         {
             sourceExtensions = extensions;
             routeCaptionCache.Clear();
-            formats = RoutePlanner.PlanWheelFormats(extensions, settings, out primaryRoutes)
-                .Select(format => format.Extension.ToUpperInvariant()).ToArray();
+            formats = hasFolder
+                ? []
+                : RoutePlanner.PlanWheelFormats(extensions, settings, out primaryRoutes)
+                    .Select(format => format.Extension.ToUpperInvariant()).ToArray();
         }
+        if (hasFolder) showingTools = true;
         toolLookupPayload = null;
         toolLookupPending = false;
         tools = [];
@@ -714,6 +859,17 @@ internal sealed class Wheel : Window
     static string[] GetSourceExtensions(string[] paths) => paths.Select(path => System.IO.Path.GetExtension(path).ToLowerInvariant())
         .Distinct(StringComparer.Ordinal).Order(StringComparer.Ordinal).ToArray();
 
+    /// <summary>Le cartelle non hanno conversioni: vengono offerti solo gli archivi (ZIP e, se disponibile, RAR).</summary>
+    static bool ContainsDirectory(IReadOnlyList<string> paths)
+    {
+        foreach (string path in paths)
+        {
+            try { if (Directory.Exists(path)) return true; }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { }
+        }
+        return false;
+    }
+
     async void LoadTools()
     {
         var payload = files;
@@ -722,24 +878,45 @@ internal sealed class Wheel : Window
         toolLookupPending = true;
         try
         {
-            bool readSize = ToolGroupsAllowed(payload);
-            var (available, size) = await Task.Run(() =>
+            bool hasFolder = ContainsDirectory(payload);
+            bool readSize = !hasFolder && ToolGroupsAllowed(payload);
+            var (available, size, reasons) = await Task.Run(() =>
             {
                 // Keep extensionless files in the intersection. ZIP can handle them, raster tools cannot.
                 string[] extensions = payload.Select(path =>
                     System.IO.Path.GetExtension(path) is { Length: > 0 } extension ? extension : "*").ToArray();
                 var ordered = settings.EnabledBackSideTools;
+                var lookupSettings = settings;
+                if (hasFolder)
+                {
+                    var required = new List<string> { "pack_zip" };
+                    if (ordered.Contains("pack_rar", StringComparer.OrdinalIgnoreCase)) required.Add("pack_rar");
+                    var missing = required.Where(id => !ordered.Contains(id, StringComparer.OrdinalIgnoreCase)).ToArray();
+                    if (missing.Length > 0)
+                    {
+                        lookupSettings = settings.CreateSnapshot();
+                        lookupSettings.EnabledBackSideTools = [.. ordered, .. missing];
+                    }
+                }
                 var size = readSize ? imageSizes.GetOrAdd(payload[0], static path => new(() => ReadOrientedSize(path))).Value : null;
-                return (RoutePlanner.GetAvailableQuickTools(extensions, settings)
-                    .OrderBy(t => ordered.FindIndex(id => id.Equals(t.Id, StringComparison.OrdinalIgnoreCase)))
-                    .ToArray(), size);
+                var found = OrderToolsForWheel(RoutePlanner.GetAvailableQuickTools(extensions, lookupSettings), ordered);
+                if (hasFolder) found = found.Where(t => t.Id is "pack_zip" or "pack_rar").ToArray();
+                var reasons = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                foreach (var tool in found)
+                {
+                    string? reason = ToolUnavailableReason(tool.Id, payload, lookupSettings);
+                    if (reason != null) reasons[tool.Id] = reason;
+                }
+                return (found, size, reasons);
             }).ConfigureAwait(false);
             await Dispatcher.InvokeAsync(() =>
             {
                 if (closing || converting || !ReferenceEquals(files, payload)) return;
                 toolLookupPending = false;
                 resizeSource = size;
-                tools = AugmentTools(available, payload);
+                toolUnavailableReasons.Clear();
+                foreach (var reason in reasons) toolUnavailableReasons[reason.Key] = reason.Value;
+                tools = hasFolder ? available : AugmentTools(available, payload);
                 UpdateGazeBarState();
                 if (showingTools)
                 {
@@ -775,7 +952,7 @@ internal sealed class Wheel : Window
 
     string ToolLabel(string id) => id switch
     {
-        "crop" => "Crop", "rotate" => Loc.T("Ruota", "Rotate"), "merge_pdf" => "PDF", "pack_zip" => "ZIP",
+        "crop" => "Crop", "rotate" => Loc.T("Ruota", "Rotate"), "merge_pdf" => Loc.T("Unisci PDF", "Merge PDF"), "pack_zip" => "ZIP", "pack_rar" => "RAR",
         "target_size" => "Target", "remove_bg" => Loc.T("Sfondo", "Bg"), "ocr" => "OCR",
         "palette" => "Palette", "clean_meta" => "Privacy", "waveform" => Loc.T("Onda", "Wave"),
         "turntable_3d" => "360°",
@@ -1147,7 +1324,8 @@ internal sealed class Wheel : Window
                 Tag = radial
             };
             bool enabled = i < SelectableCount;
-            path.Opacity = enabled ? 1 : .38;
+            bool toolReady = !showingTools || !toolUnavailableReasons.ContainsKey(slots[i]);
+            path.Opacity = enabled ? (toolReady ? 1 : .34) : .38;
             sectors.Add(path); canvas.Children.Add(path);
             System.Windows.Shapes.Path? marker = null;
             if (!showingTools && enabled && rememberedTarget != null && SlotMatchesRememberedTarget(i, rememberedTarget))
@@ -1178,7 +1356,7 @@ internal sealed class Wheel : Window
             var label = new TextBlock
             {
                 Text = caption,
-                Opacity = enabled ? 1 : .32,
+                Opacity = enabled ? (toolReady ? 1 : .28) : .32,
                 FontSize = fontSize,
                 FontWeight = FontWeights.Bold,
                 Foreground = Brushes.White,
@@ -2191,6 +2369,14 @@ internal sealed class Wheel : Window
         {
             if (runBrowserTool == null) { Dismiss("no-browser-tool-handler"); return; }
             var tool = ResolveTool(sector, out bool groupAction);
+            if (toolUnavailableReasons.TryGetValue(tool.Id, out string? browserReason))
+            {
+                report(browserReason);
+                ShowToolNotice(browserReason);
+                playSound?.Invoke();
+                Evidence.Log("browser.quick-tool.unavailable", new { via, tool.Id, browserReason });
+                return;
+            }
             var context = new QuickToolContext { InputFilePaths = files.ToArray(), Settings = settings };
             if (!groupAction && TryGetPreset(tool.Id, out var options))
                 context.Parameters[options.Key] = options.Values[toolPresets.GetValueOrDefault(tool.Id)];
@@ -2238,6 +2424,14 @@ internal sealed class Wheel : Window
                 return;
             }
             var tool = ResolveTool(sector, out bool groupAction);
+            if (toolUnavailableReasons.TryGetValue(tool.Id, out string? reason))
+            {
+                report(reason);
+                ShowToolNotice(reason);
+                playSound?.Invoke();
+                Evidence.Log("quick-tool.unavailable", new { via, files, tool.Id, reason });
+                return;
+            }
             var context = new QuickToolContext { InputFilePaths = selectedFiles, Settings = settings };
             if (!groupAction && TryGetPreset(tool.Id, out var options))
                 context.Parameters[options.Key] = options.Values[toolPresets.GetValueOrDefault(tool.Id)];

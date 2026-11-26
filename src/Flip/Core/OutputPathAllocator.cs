@@ -80,8 +80,9 @@ public static class OutputPathAllocator
 
         internal bool IsSource(string path) => sourcePaths.Contains(path);
 
-        internal string GetDirectory(string source)
+        internal string GetDirectory(string source, string? directoryOverride = null)
         {
+            if (directoryOverride != null) return directoryOverride;
             if (customDirectory != null) return customDirectory;
             string directory = Path.GetDirectoryName(source)!;
             if (IsTransientStagingDirectory(directory))
@@ -136,7 +137,8 @@ public static class OutputPathAllocator
         internal CommitResult CommitOutputAndApplyRules(
             IReadOnlyList<StagedOutput> outputs,
             CancellationToken token,
-            bool allowRecycle = true)
+            bool allowRecycle = true,
+            string? destinationDirectory = null)
         {
             ObjectDisposedException.ThrowIf(disposed, this);
             if (commitStarted) throw new InvalidOperationException("Il job è già stato finalizzato.");
@@ -159,7 +161,7 @@ public static class OutputPathAllocator
                 if (batch.KeepOnlyIfSmaller && artifacts.Any(file => file.Length >= SourceBytes))
                     return new(published, "Almeno un output occupa uno spazio pari o superiore a quello dei sorgenti.");
 
-                string destination = batch.GetDirectory(sources[0].FullName);
+                string destination = batch.GetDirectory(sources[0].FullName, destinationDirectory);
                 void StageToDestination(string targetDir)
                 {
                     Directory.CreateDirectory(targetDir);

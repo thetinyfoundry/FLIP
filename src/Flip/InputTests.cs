@@ -80,6 +80,28 @@ internal static class InputTests
             ["swapped_primary"] = Native.PrimaryVirtualKey(true) == 2 && Native.PrimaryDown(4, true) && Native.PrimaryUp(8, true),
             ["normal_primary"] = Native.PrimaryVirtualKey(false) == 1 && Native.PrimaryDown(1, false) && Native.PrimaryUp(2, false)
         };
+
+        // ── Apertura con pressione prolungata del mouse ──────────────────
+        checks["hold_to_open_opt_in_default"] = new FlipSettings().HoldToOpenEnabled == false &&
+                                                 new FlipSettings().HoldToOpenMilliseconds == 3000;
+        checks["hold_to_open_clamps_duration"] =
+            new FlipSettings { HoldToOpenMilliseconds = 10 }.HoldToOpenMilliseconds == 1000 &&
+            new FlipSettings { HoldToOpenMilliseconds = 99999 }.HoldToOpenMilliseconds == 8000;
+        var holdGate = new HoldToOpenGate(3000);
+        holdGate.MouseDown(100, 100, 10_000);
+        checks["hold_not_due_before_threshold"] = !holdGate.IsDue(12_999);
+        checks["hold_due_at_threshold"] = holdGate.IsDue(13_000);
+        holdGate.MouseUp();
+        checks["hold_cancelled_by_mouse_up"] = !holdGate.IsDue(20_000);
+        holdGate.MouseDown(100, 100, 30_000);
+        holdGate.Move(108, 100);
+        checks["hold_cancelled_by_move"] = !holdGate.IsDue(40_000);
+        holdGate.MouseDown(100, 100, 50_000);
+        holdGate.Move(105, 100);
+        checks["hold_tolerates_small_jitter"] = holdGate.IsDue(53_000);
+        holdGate.Cancel();
+        checks["hold_cancelled_explicitly"] = !holdGate.IsDue(99_000);
+
         checks["universal_default_is_down_arrow"] = WheelShortcut.Parse(WheelShortcut.Default).VirtualKey == 0x28;
         foreach (string id in new[] { "DOWN", "UP", "LEFT", "RIGHT", "SPACE", "OEM102", "F8", "F9", "A", "7", "VK:BF" })
         {
@@ -205,6 +227,7 @@ internal static class InputTests
         catch (IOException) { checks["unowned_cleanup_refused"] = Directory.Exists(cleanupRoot); }
         Directory.Delete(cleanupRoot);
         CheckReleaseRefinements(checks);
+        CheckArchiveOutputs(checks);
         CheckSubRings(checks);
         CheckBrowserDrop(checks);
         CheckClipboardFlip(checks);
@@ -233,6 +256,104 @@ internal static class InputTests
         checks["pdf_natural_order_optional"] = sorted.SequenceEqual(["pagina-1.pdf", "pagina-2.pdf", "pagina-10.pdf"]) &&
             original.SequenceEqual(["pagina-10.pdf", "pagina-2.pdf", "pagina-1.pdf"]) && input.SequenceEqual(original);
 
+        // Unione PDF: le pagine devono mantenere dimensioni e orientamento sorgente,
+        // con override opzionale ciclabile dalla ruota (A4/A3, verticale/orizzontale).
+        string mergeRoot = Path.Combine(Evidence.DirectoryPath, "merge-size-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            Directory.CreateDirectory(mergeRoot);
+            string a3a = Path.Combine(mergeRoot, "a3-a.pdf");
+            string a3b = Path.Combine(mergeRoot, "a3-b.pdf");
+            foreach (string path in new[] { a3a, a3b })
+            {
+                using var stream = new FileStream(path, FileMode.CreateNew, FileAccess.Write, FileShare.None);
+                using var doc = SkiaSharp.SKDocument.CreatePdf(stream) ?? throw new IOException("PDF encoder unavailable.");
+                var page = doc.BeginPage(1190.55f, 841.89f);
+                page.Clear(SkiaSharp.SKColors.White);
+                doc.EndPage();
+                doc.Close();
+            }
+
+            var tool = new MergePdfQuickTool();
+            var originalContext = new QuickToolContext { InputFilePaths = [a3a, a3b], Settings = new FlipSettings() };
+            var merged = tool.ExecuteAsync(originalContext).GetAwaiter().GetResult();
+            using var pdf = merged.Success && merged.OutputFilePaths.Count > 0
+                ? UglyToad.PdfPig.PdfDocument.Open(merged.OutputFilePaths[0])
+                : null;
+            checks["merge_pdf_preserves_a3_landscape"] = pdf is { NumberOfPages: 2 } &&
+                Math.Abs(pdf.GetPage(1).Width - 1190.55) <= 2 && Math.Abs(pdf.GetPage(1).Height - 841.89) <= 2 &&
+                Math.Abs(pdf.GetPage(2).Width - 1190.55) <= 2 && Math.Abs(pdf.GetPage(2).Height - 841.89) <= 2 &&
+                pdf.GetPage(1).Width > pdf.GetPage(1).Height;
+
+            var overrideContext = new QuickToolContext { InputFilePaths = [a3a, a3b], Settings = new FlipSettings() };
+            overrideContext.Parameters["page_size"] = "a4p";
+            var overridden = tool.ExecuteAsync(overrideContext).GetAwaiter().GetResult();
+            using var pdfA4 = overridden.Success && overridden.OutputFilePaths.Count > 0
+                ? UglyToad.PdfPig.PdfDocument.Open(overridden.OutputFilePaths[0])
+                : null;
+            checks["merge_pdf_page_size_override"] = pdfA4 is { NumberOfPages: 2 } &&
+                Math.Abs(pdfA4.GetPage(1).Width - 595.28) <= 2 && Math.Abs(pdfA4.GetPage(1).Height - 841.89) <= 2 &&
+                pdfA4.GetPage(1).Height > pdfA4.GetPage(1).Width;
+        }
+        finally { try { Directory.Delete(mergeRoot, true); } catch { /* output may be in use by evidence snapshot */ } }
+
+        EngineBootstrap.EnsureInitialized();
+        string? oneFileMerge = Wheel.ToolUnavailableReason("merge_pdf", ["a.pdf"], new FlipSettings());
+        string? twoFileMerge = Wheel.ToolUnavailableReason("merge_pdf", ["a.pdf", "b.pdf"], new FlipSettings());
+        checks["merge_pdf_disabled_with_single_file"] = oneFileMerge != null && twoFileMerge == null;
+
+        bool ffmpegSuppress = CliResolver.SuppressAutoDiscoveryForTest;
+        try
+        {
+            CliResolver.SuppressAutoDiscoveryForTest = true;
+            string? videoReason = Wheel.ToolUnavailableReason("target_size", ["clip.mp4"], new FlipSettings());
+            string? imageReason = Wheel.ToolUnavailableReason("target_size", ["foto.png"], new FlipSettings());
+            checks["target_size_video_needs_ffmpeg"] = videoReason != null && imageReason == null;
+        }
+        finally { CliResolver.SuppressAutoDiscoveryForTest = ffmpegSuppress; }
+
+        var zipTool = RoutePlanner.FindQuickTool("pack_zip")!;
+        var rarTool = RoutePlanner.FindQuickTool("pack_rar")!;
+        var cropTool = RoutePlanner.FindQuickTool("crop")!;
+        var orderedTools = Wheel.OrderToolsForWheel([cropTool, zipTool, rarTool],
+            ["crop", "pack_zip", "turntable_3d", "pack_rar"]);
+        checks["archive_wedges_are_adjacent"] = orderedTools.Select(tool => tool.Id)
+            .SequenceEqual(["crop", "pack_zip", "pack_rar"]);
+
+        // Uno spicchio non disponibile deve mostrare il messaggio dentro la ruota, non solo nel tray.
+        var reported = new List<string>();
+        var noticeWheel = new Wheel(reported.Add, (_, _) => { }, runTool: (_, _) => { })
+        {
+            Opacity = 0, Topmost = false
+        };
+        try
+        {
+            const BindingFlags priv = BindingFlags.Instance | BindingFlags.NonPublic;
+            typeof(Wheel).GetField("showingTools", priv)!.SetValue(noticeWheel, true);
+            typeof(Wheel).GetField("files", priv)!.SetValue(noticeWheel, new[] { Path.Combine(Evidence.DirectoryPath, "one.pdf") });
+            typeof(Wheel).GetField("tools", priv)!.SetValue(noticeWheel, new IQuickTool[] { new MergePdfQuickTool() });
+            var reasons = (Dictionary<string, string>)typeof(Wheel).GetField("toolUnavailableReasons", priv)!.GetValue(noticeWheel)!;
+            reasons["merge_pdf"] = "Unisci PDF richiede due file.";
+            var hitType = typeof(Wheel).GetNestedType("SectorHit", BindingFlags.NonPublic)!;
+            object hit = Activator.CreateInstance(hitType,
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic, null, [0, -1], null)!;
+            typeof(Wheel).GetMethod("Choose", priv)!.Invoke(noticeWheel, [hit, "click"]);
+            checks["unavailable_tool_shows_in_wheel_notice"] = noticeWheel.ToolNoticeVisible &&
+                noticeWheel.ToolNoticeText.Contains("due file", StringComparison.Ordinal) &&
+                reported.Contains("Unisci PDF richiede due file.");
+        }
+        finally { noticeWheel.Close(); }
+
+        // Ogni messaggio (non solo gli strumenti non disponibili) deve avere una finestra visibile,
+        // non solo il balloon della tray.
+        var toast = new ToastWindow { Opacity = 0 };
+        try
+        {
+            toast.ShowMessage("Messaggio di verifica visibile.");
+            checks["toast_window_shows_notice"] = toast.IsVisible && toast.MessageText == "Messaggio di verifica visibile.";
+        }
+        finally { toast.CloseToast(); toast.Close(); }
+
         int scans = 0;
         long now = 0;
         var cache = new WhisperLocator.DiscoveryCache(() => { scans++; return new([], []); }, () => now);
@@ -244,6 +365,58 @@ internal static class InputTests
         cache.Invalidate();
         cache.Get();
         checks["whisper_negative_cache_ttl_and_invalidation"] = cached && scans == 3;
+
+        bool previousSuppress = CliResolver.SuppressAutoDiscoveryForTest;
+        try
+        {
+            EngineBootstrap.EnsureInitialized();
+            CliResolver.SuppressAutoDiscoveryForTest = true;
+            var cleanSnap = new FlipSettings();
+            bool docUnavailable = !RoutePlanner.GetReachableTargetFormats(new[] { "pdf" }, cleanSnap)
+                .Any(format => format.Extension == "doc");
+            string? missing = RoutePlanner.FindMissingInstallableEngine(
+                new[] { "pdf" }, "doc", cleanSnap, new[] { "libreoffice" });
+            checks["missing_engine_detected_for_selected_format"] = docUnavailable && missing == "libreoffice";
+        }
+        finally { CliResolver.SuppressAutoDiscoveryForTest = previousSuppress; }
+    }
+
+    static void CheckArchiveOutputs(Dictionary<string, bool> checks)
+    {
+        string root = Path.Combine(Evidence.DirectoryPath, "archive-" + Guid.NewGuid().ToString("N"));
+        string folder = Path.Combine(root, "Cartella");
+        try
+        {
+            Directory.CreateDirectory(Path.Combine(folder, "sub"));
+            File.WriteAllText(Path.Combine(folder, "a.txt"), "a");
+            File.WriteAllText(Path.Combine(folder, "sub", "b.txt"), "b");
+
+            var settings = new FlipSettings
+            {
+                OutputDirectoryMode = OutputDirectoryMode.SameAsSource,
+                ConflictPolicy = ConflictPolicy.AutoNumber
+            };
+            var context = new QuickToolContext { InputFilePaths = [folder], Settings = settings };
+            var result = new PackZipQuickTool().ExecuteAsync(context).GetAwaiter().GetResult();
+            string expected = Path.Combine(root, "Cartella_bundle.zip");
+            bool insideFolder = Directory.EnumerateFiles(folder, "*.zip", SearchOption.AllDirectories).Any();
+            bool nestedEntry = false;
+            if (result.Success && File.Exists(expected))
+            {
+                using var archive = System.IO.Compression.ZipFile.OpenRead(expected);
+                nestedEntry = archive.Entries.Any(e => e.FullName.Replace('\\', '/').StartsWith("Cartella/sub/", StringComparison.OrdinalIgnoreCase));
+            }
+            checks["folder_zip_next_to_folder"] = result.Success && !insideFolder && File.Exists(expected) && nestedEntry;
+        }
+        catch (Exception ex)
+        {
+            Evidence.Log("folder.zip.test.error", ex.Message);
+            checks["folder_zip_next_to_folder"] = false;
+        }
+        finally
+        {
+            try { Directory.Delete(root, recursive: true); } catch { }
+        }
     }
 
     private static void CheckSubRings(Dictionary<string, bool> checks)
@@ -455,6 +628,16 @@ internal static class InputTests
             wheel.HandleDragCommand(WheelCommand.FlipFace);
             WaitForFlip();
 
+            // La rotella deve funzionare anche senza drag (apertura con pressione prolungata).
+            typeof(Wheel).GetField("dropping", privateInstance)!.SetValue(wheel, false);
+            bool toolsBefore = wheel.IsShowingTools;
+            wheel.HandleDragScroll(120);
+            WaitForFlipEnd();
+            checks["subring_scroll_flips_without_drag"] = wheel.IsShowingTools != toolsBefore;
+            wheel.HandleDragScroll(120);
+            WaitForFlipEnd();
+            typeof(Wheel).GetField("dropping", privateInstance)!.SetValue(wheel, true);
+
             Drag(DragDrop.PreviewDragOverEvent, parentPoint);
             wheel.UpdateLayout();
             var drop = Drag(DragDrop.PreviewDropEvent, childPoint);
@@ -488,6 +671,23 @@ internal static class InputTests
                 try { Dispatcher.PushFrame(frame); }
                 finally { timer.Stop(); }
                 if (!wheel.CanUseDragCommand(WheelCommand.FlipFace)) throw new TimeoutException("Flip animation did not finish.");
+            }
+
+            void WaitForFlipEnd()
+            {
+                var frame = new DispatcherFrame();
+                var deadline = DateTime.UtcNow.AddSeconds(3);
+                var timer = new DispatcherTimer(DispatcherPriority.Background) { Interval = TimeSpan.FromMilliseconds(15) };
+                timer.Tick += (_, _) =>
+                {
+                    bool flipping = (bool)typeof(Wheel).GetField("flipping", privateInstance)!.GetValue(wheel)!;
+                    if (!flipping || DateTime.UtcNow >= deadline) frame.Continue = false;
+                };
+                timer.Start();
+                try { Dispatcher.PushFrame(frame); }
+                finally { timer.Stop(); }
+                if ((bool)typeof(Wheel).GetField("flipping", privateInstance)!.GetValue(wheel)!)
+                    throw new TimeoutException("Non-drag flip animation did not finish.");
             }
         }
         finally { wheel.Close(); }

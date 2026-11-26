@@ -26,7 +26,8 @@ public static class CliResolver
         ["calibre"] = new(["ebook-convert.exe", "ebook-convert"], ["Calibre2", "Calibre"]),
         ["whisper"] = new(["whisper-cli.exe", "faster-whisper-xxl.exe", "whisper-faster.exe", "whisper.exe", "whisper"],
             [Path.Combine("whisper.cpp", "bin"), "whisper.cpp", "Whisper"]),
-        ["tesseract"] = new(["tesseract.exe", "tesseract"], ["Tesseract-OCR", "Tesseract"])
+        ["tesseract"] = new(["tesseract.exe", "tesseract"], ["Tesseract-OCR", "Tesseract"]),
+        ["winrar"] = new(["rar.exe", "WinRAR.exe"], ["WinRAR"])
     };
 
     /// <summary>Solo per test automatizzati: simula un PC pulito senza motori CLI esterni installati.</summary>
@@ -250,6 +251,7 @@ public static class CliResolver
             "tesseract" => "*Tesseract*",
             "calibre" => "*calibre*",
             "libreoffice" => "*LibreOffice*",
+            "winrar" => "*WinRAR*",
             _ => ""
         };
         if (pattern.Length == 0) return null;

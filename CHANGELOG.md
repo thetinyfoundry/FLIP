@@ -4,7 +4,7 @@ Notable changes to **FLIP**. Versions before 1.0.0 were distributed only on GitH
 
 ---
 
-## [1.0.2] - Unreleased
+## [1.0.2] - 2026-11-26
 
 ### Added
 - **Engine suggestions.** When a missing engine would add formats for the files on the wheel, a notice says so once per engine. Clicking it opens *Engines & GPU*, where each missing engine lists the formats it adds next to its 1-Click button. The wheel itself is unchanged.
